@@ -51,6 +51,7 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
+static uint8_t wakeup_counter = 0;  // Counter for 10-minute wake-ups (40 x 15 seconds = 600 seconds = 10 minutes)
 
 /* USER CODE END PV */
 
@@ -61,7 +62,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
-
+void EnterDeepSleepMode(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -171,6 +172,9 @@ static void MX_RTC_Init(void);
 
 int lorawan_is_config_required(UART_HandleTypeDef *huart)
 {
+	  HAL_UART_Transmit(huart, (uint8_t*)"AT\r\n", 4, 300);
+	uint8_t rxwakebuf[16] = {0};
+	  HAL_UART_Receive(huart, rxwakebuf, 6, 200);
 	  uint8_t rxbuf[16] = {0};
 	  // Totally Flush buffer and stuff
 	  HAL_UART_AbortReceive(huart);
@@ -197,6 +201,9 @@ int lorawan_is_config_required(UART_HandleTypeDef *huart)
 
 int lorawan_is_connected(UART_HandleTypeDef *huart)
 {
+	  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+	uint8_t rxwakebuf[16] = {0};
+	  HAL_UART_Receive(huart, rxwakebuf, 4, 200);
 	  uint8_t rxbuf[256] = {0};
 	  // Totally Flush buffer and stuff
 	  HAL_UART_AbortReceive(huart);
@@ -222,6 +229,7 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
+	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
 	uint16_t total_rcv = 0;
 	int16_t total_expected =11;
 	uint8_t rxbuf[256] = {0};
@@ -255,6 +263,7 @@ int join(UART_HandleTypeDef *huart)
 
 int SendData(UART_HandleTypeDef *huart, char* data)
 {
+	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
 	uint16_t total_rcv = 0;
 	int16_t total_expected = 200;
 	uint8_t rxbuf[256] = {0};
@@ -394,6 +403,7 @@ int main(void)
 //  HAL_UART_Transmit(&huart2, "AT%S 501=\"0025CA00000055F7\"\r\n", 29, 300); // DEV EUI
 //  HAL_UART_Transmit(&huart2, "AT%S 502=\"0000000000000000\"\r\n", 29, 300); // JOIN EUI
 //
+//  HAL_UART_Transmit(&huart2, "ATS 213=2000\r\n", 14, 300); // Set CLASS to A
 //  HAL_UART_Transmit(&huart2, "AT&W\r\n", 6, 300); // SAVE ALL!
 //  HAL_UART_Transmit(&huart2, "ATZ\r\n", 5, 300); // Soft reboot!
 
@@ -471,18 +481,26 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-	is_connected = lorawan_is_connected(&huart2);
-	if (!is_connected)
+	// Check if it's time to process LoRaWAN (every 40th wake-up = 600 seconds = 10 minutes)
+	if (wakeup_counter >= 40) 
 	{
-	  is_connected = join(&huart2);
-	}
-	else
-	{
-		// We ARE connected!
-		SendData(&huart2, "AT+SEND \"AABB\"\r\n");
+		wakeup_counter = 0;  // Reset counter
+		
+		is_connected = lorawan_is_connected(&huart2);
+		if (!is_connected)
+		{
+		  is_connected = join(&huart2);
+		}
+		else
+		{
+			// We ARE connected!
+			SendData(&huart2, "AT+SEND \"AABB\"\r\n");
+		}
 	}
 
-	HAL_Delay(60000);
+	// Enter deep sleep mode - device will wake up on RTC timer every 15 seconds
+	// But only process LoRaWAN every 40th wake-up (600 seconds = 10 minutes total)
+	EnterDeepSleepMode();
   }
   /* USER CODE END 3 */
 }
@@ -540,7 +558,7 @@ void SystemClock_Config(void)
                               |RCC_PERIPHCLK_RTC;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -593,9 +611,13 @@ static void MX_RTC_Init(void)
     Error_Handler();
   }
 
-  /** Enable the WakeUp
-  */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  /** Enable the WakeUp - Set for 15 seconds with LSE crystal
+   *  LSE = 32768 Hz
+   *  Using RTC_WAKEUPCLOCK_RTCCLK_DIV16: 32768/16 = 2048 Hz
+   *  For 15 seconds: 15 * 2048 = 30720 - 1 = 30719 (fits in 16-bit counter)
+   *  Will wake every 15 seconds, but only process LoRaWAN every 40th wake (600 seconds = 10 minutes total)
+   */
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 30719, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
   {
     Error_Handler();
   }
@@ -697,6 +719,132 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief  Wakeup Timer callback.
+  * @param  hrtc pointer to a RTC_HandleTypeDef structure that contains
+  *                the configuration information for RTC.
+  * @retval None
+  */
+void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
+{
+  /* Wake up from deep sleep every 15 seconds */
+  /* Increment counter - only process LoRaWAN every 40th wake-up (600 seconds = 10 minutes total) */
+  wakeup_counter++;
+  
+  /* For debugging: you can add LED toggle here to see wake-ups every 15 seconds */
+  /* If you have an LED, uncomment next line to see it blink every 15 seconds */
+  /* HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); */
+}
+
+/**
+  * @brief  Configure GPIOs for ultra-low power consumption
+  * @retval None
+  */
+void ConfigureGPIOForLowPower(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  
+  /* Enable all GPIO clocks */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  
+  /* Configure all GPIO pins as analog to reduce power consumption */
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  
+  /* Configure GPIOA pins (except UART pins PA2, PA3 and PA9, PA10) */
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5 | 
+                        GPIO_PIN_6 | GPIO_PIN_7 | GPIO_PIN_8 | GPIO_PIN_11 | 
+                        GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  
+  /* Configure all GPIOB pins */
+  GPIO_InitStruct.Pin = GPIO_PIN_All;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  
+  /* Configure GPIOC pins (except PC14, PC15 for LSE crystal) */
+  GPIO_InitStruct.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3 | 
+                        GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7 | 
+                        GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11 | 
+                        GPIO_PIN_12 | GPIO_PIN_13;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+  
+  /* Configure all GPIOD pins */
+  GPIO_InitStruct.Pin = GPIO_PIN_All;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+  
+  /* Configure all GPIOH pins */
+  GPIO_InitStruct.Pin = GPIO_PIN_All;
+  HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
+}
+
+/**
+  * @brief  Restore GPIOs after wake-up
+  * @retval None
+  */
+void RestoreGPIOAfterWakeup(void)
+{
+  /* Reinitialize GPIOs needed for UART operation */
+  MX_GPIO_Init();
+}
+
+/**
+  * @brief  Enter Deep Sleep Mode using STOP mode with RTC wake-up
+  * @retval None
+  */
+void EnterDeepSleepMode(void)
+{
+  /* Configure all GPIOs for ultra-low power */
+  ConfigureGPIOForLowPower();
+  
+  /* Disable unnecessary peripheral clocks */
+  __HAL_RCC_USART1_CLK_DISABLE();
+  __HAL_RCC_USART2_CLK_DISABLE();
+  __HAL_RCC_GPIOA_CLK_DISABLE();
+  __HAL_RCC_GPIOB_CLK_DISABLE();
+  __HAL_RCC_GPIOC_CLK_DISABLE();
+  __HAL_RCC_GPIOD_CLK_DISABLE();
+  __HAL_RCC_GPIOH_CLK_DISABLE();
+  
+  /* Suspend SysTick to avoid wake-up from SysTick interrupt */
+  HAL_SuspendTick();
+  
+  /* Clear any pending wake-up flags */
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+  
+  /* Enter STOP Mode with Low Power Regulator */
+  HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+  
+  /* === DEVICE IS NOW IN DEEP SLEEP === */
+  /* === WAKE UP OCCURS HERE === */
+  
+  /* Upon wake-up, the system clock needs to be reconfigured */
+  SystemClock_Config();
+  
+  /* Re-enable peripheral clocks */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_USART1_CLK_ENABLE();
+  __HAL_RCC_USART2_CLK_ENABLE();
+  
+  /* Restore GPIO configuration for normal operation */
+  RestoreGPIOAfterWakeup();
+  
+  /* Re-initialize UARTs */
+  MX_USART1_UART_Init();
+  MX_USART2_UART_Init();
+  
+  /* Resume SysTick */
+  HAL_ResumeTick();
+  
+  /* Small delay to ensure system is stable after wake-up */
+  HAL_Delay(10);
+}
 
 /* USER CODE END 4 */
 
