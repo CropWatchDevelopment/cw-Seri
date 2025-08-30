@@ -25,6 +25,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "battery/vbat_lorawan.h"
 #include "sensirion/sensirion.h"
@@ -37,7 +38,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SLEEP_TIME_MINUTES 1  // Sleep time in minutes between LoRaWAN transmissions
+#define SLEEP_TIME_MINUTES 10  // Sleep time in minutes between LoRaWAN transmissions
+// Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
+#define SLEEP_INTERVAL_SECONDS 30
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,9 +61,9 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
-static uint8_t wakeup_counter = 0;  // Counter for sleep intervals (calculated based on SLEEP_TIME_MINUTES)
-// Calculate how many 32-second intervals make up SLEEP_TIME_MINUTES
-static const uint8_t WAKEUPS_PER_CYCLE = (SLEEP_TIME_MINUTES * 60) / 32;
+static volatile uint8_t wakeup_counter = 0;  // Updated inside RTC WakeUp ISR
+// Number of wakeups per transmission cycle (ceil division to avoid truncation)
+static const uint8_t WAKEUPS_PER_CYCLE = (uint8_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 static bool first_run = true;  // Flag to ensure first transmission happens immediately
 
 /* USER CODE END PV */
@@ -79,6 +82,37 @@ void EnterDeepSleepMode(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// UART state verification function
+static bool verify_uart_ready(UART_HandleTypeDef *huart)
+{
+  return (huart != NULL);  // Simplified check for now
+}
+
+// Debug logging helpers over huart1 (115200 baud)
+static void dbg_print(const char *s)
+{
+  if (!s) return;
+  size_t n = strlen(s);
+  HAL_StatusTypeDef status = HAL_UART_Transmit(&huart1, (uint8_t*)s, (uint16_t)n, 100);
+  if (status != HAL_OK) {
+    // UART failed, try to recover
+    HAL_UART_DeInit(&huart1);
+    HAL_Delay(10);
+    MX_USART1_UART_Init();
+  }
+}
+static void dbg_print_line(const char *s)
+{
+  if (!s) return;
+  dbg_print(s);
+  dbg_print("\r\n");
+}
+static void dbg_print_u32(const char *k, uint32_t v)
+{
+  char buf[64]; int n = snprintf(buf, sizeof(buf), "%s=%lu\r\n", k?k:"?", (unsigned long)v);
+  if (n>0) HAL_UART_Transmit(&huart1, (uint8_t*)buf, (uint16_t)n, 100);
+}
 
 
 char find_char_after(const char *str, const char *keyword) {
@@ -263,7 +297,8 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
-	if (is_connected) return 1;
+  if (is_connected) { dbg_print_line("JOIN:skip"); return 1; }
+  dbg_print_line("JOIN:start");
 	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
 	HAL_Delay(300); // let OK come back!
 	uint16_t total_rcv = 0;
@@ -288,13 +323,15 @@ int join(UART_HandleTypeDef *huart)
 	if (result == 'O' || error14 == '4')
 	{
 		is_connected = 1;
-		return 1;
+    dbg_print_line("JOIN:success");
+    return 1;
 		__NOP(); // success
 	}
 	else
 	{
 		is_connected = 0;
-		return 0;
+    dbg_print_line("JOIN:fail");
+    return 0;
 		__NOP(); // fail
 	}
 }
@@ -442,10 +479,12 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
     // Copy suffix
     for (size_t i = 0; i < suffix_len; ++i) txbuf[idx++] = (uint8_t)suffix[i];
 
-    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+  dbg_print_u32("SEND:len", (uint32_t)length);
+  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
     HAL_Delay(300);
     // Exactly one TX
-    HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300);
+  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300);
+  dbg_print_line("SEND:done");
 }
 
 
@@ -579,51 +618,49 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	// Check if it's time for LoRaWAN transmission
-	// Transmit on first run, then every WAKEUPS_PER_CYCLE wake-ups
-	// With SLEEP_TIME_MINUTES=2, WAKEUPS_PER_CYCLE=8, so we transmit every 8 wake-ups
-	if (first_run || wakeup_counter >= WAKEUPS_PER_CYCLE)
-	{
-		// Reset counter for next cycle
-		wakeup_counter = 0;
+  
+  // Verify UART is ready after wake-up
+  if (!verify_uart_ready(&huart1) || !verify_uart_ready(&huart2)) {
+    dbg_print_line("UART:reinit_failed");
+    // Additional recovery could be added here if needed
+  }
+  
+  dbg_print_u32("Loop:wakeup_counter", wakeup_counter);
+  bool do_transmit = (first_run || wakeup_counter >= WAKEUPS_PER_CYCLE);
+  if (!do_transmit) { dbg_print_line("Loop:no_tx"); }
+  if (do_transmit)
+  {
+    wakeup_counter = 0;   // reset for next cycle
+    first_run = false;
+    dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+    if (is_connected == 0)
+    {
+      join(&huart2);
+    }
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+    HAL_Delay(1000); // sensor power-up and stabilization
+    scan_i2c_bus();
+    bool i2c_success = sensor_init_and_read();
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+    if (i2c_success)
+    {
+      HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_SET);
+      HAL_Delay(300);
+      int aproxBatteryTemp_c = ((calculated_temp - 55) / 10);
+      uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
+      HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
+      lorawan_set_battery_level(&huart2, battery);
 
-
-//		if (first_run)
-//		{
-			first_run = false;
-			// Check for connection again just incase on initial startup, we didn't connect
-			if(is_connected == 0)
-			{
-				join(&huart2);
-			}
-			HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-			HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
-			scan_i2c_bus();
-			bool i2c_success = sensor_init_and_read();
-			HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
-			if (i2c_success)
-			{
-				HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_SET);
-				HAL_Delay(300); // just tto let the power stabalize
-				int aproxBatteryTemp_c = ((calculated_temp - 55) / 10);
-				uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
-				HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
-				lorawan_set_battery_level(&huart2, battery);
-
-				uint8_t payload[5];
-				payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
-				payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
-				payload[2] = calculated_hum;
-				LoRaWAN_SendHex(payload, 3);
-			}
-
-//		}
-//		configWakeupTime();
-		EnterDeepSleepMode();
-	}
-
-
-
+      uint8_t payload[5];
+      payload[0] = (uint8_t)(calculated_temp >> 8);
+      payload[1] = (uint8_t)(calculated_temp & 0xFF);
+      payload[2] = calculated_hum;
+      LoRaWAN_SendHex(payload, 3);
+  dbg_print_line("TX:done");
+    }
+  }
+  // Always go back to deep sleep to allow next RTC wake
+  EnterDeepSleepMode();
   }
   /* USER CODE END 3 */
 }
@@ -825,9 +862,11 @@ static void MX_RTC_Init(void)
     Error_Handler();
   }
 
-  /** Enable the WakeUp
-  */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  /** Enable the WakeUp with the configured base interval (e.g. 32 s)
+    * LSE = 32768 Hz, DIV16 -> 2048 Hz tick; counts = seconds * 2048 - 1
+    */
+  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32s => 65535 (max)
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
   {
     Error_Handler();
   }
@@ -954,9 +993,15 @@ static void MX_GPIO_Init(void)
 
 void configWakeupTime()
 {
-	HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
-	uint32_t wakeup_timer_value = 32 * 2048 - 1;  // 32 seconds
-	HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
+  // Optional visual indicator that we (re)armed the wake-up
+  HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
+  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u;  // 32 seconds default
+  // Deactivate previous timer before re-arming (HAL recommendation when changing value)
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 /**
   * @brief  Wakeup Timer callback.
@@ -1035,6 +1080,11 @@ void RestoreGPIOAfterWakeup(void)
   */
 void EnterDeepSleepMode(void)
 {
+  /* Properly deinitialize UARTs before sleep */
+  HAL_UART_DeInit(&huart1);
+  HAL_UART_DeInit(&huart2);
+  HAL_I2C_DeInit(&hi2c1);
+  
   /* Configure all GPIOs for ultra-low power */
   ConfigureGPIOForLowPower();
   
@@ -1042,7 +1092,6 @@ void EnterDeepSleepMode(void)
   __HAL_RCC_I2C1_CLK_DISABLE();
   __HAL_RCC_USART1_CLK_DISABLE();
   __HAL_RCC_USART2_CLK_DISABLE();
-//  __HAL_RCC_GPIOA_CLK_DISABLE();
   __HAL_RCC_GPIOB_CLK_DISABLE();
   __HAL_RCC_GPIOC_CLK_DISABLE();
   __HAL_RCC_GPIOD_CLK_DISABLE();
@@ -1068,17 +1117,17 @@ void EnterDeepSleepMode(void)
   SystemClock_Config();
   
   /* Re-enable peripheral clocks */
-  __HAL_RCC_I2C1_CLK_ENABLE();
-//  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_I2C1_CLK_ENABLE();
   __HAL_RCC_USART1_CLK_ENABLE();
   __HAL_RCC_USART2_CLK_ENABLE();
   
   /* Restore GPIO configuration for normal operation */
-//  RestoreGPIOAfterWakeup();
+  MX_GPIO_Init();
   
-  /* Re-initialize I2C and UARTs */
+  /* Re-initialize peripherals with proper sequence */
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
@@ -1086,8 +1135,8 @@ void EnterDeepSleepMode(void)
   /* Resume SysTick */
   HAL_ResumeTick();
   
-  /* Small delay to ensure system is stable after wake-up */
-  HAL_Delay(10);
+  /* Add longer delay for UART stabilization */
+  HAL_Delay(100);
 }
 
 /* USER CODE END 4 */
