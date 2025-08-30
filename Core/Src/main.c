@@ -25,8 +25,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "battery/vbat_lorawan.h"
 #include "sensirion/sensirion.h"
-#include "battery/battery.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -262,6 +263,7 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
+	if (is_connected) return 1;
 	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
 	HAL_Delay(300); // let OK come back!
 	uint16_t total_rcv = 0;
@@ -281,15 +283,17 @@ int join(UART_HandleTypeDef *huart)
 	__HAL_UART_FLUSH_DRREGISTER(&huart2);
 	__HAL_UART_CLEAR_IDLEFLAG(&huart2);
 
-	char result = find_char_after(rxbuf, "JOIN: [");
-	char error14 = find_char_after(rxbuf, "\nERROR 1");
+	char result = find_char_after((const char*)rxbuf, "JOIN: [");
+	char error14 = find_char_after((const char*)rxbuf, "\nERROR 1");
 	if (result == 'O' || error14 == '4')
 	{
+		is_connected = 1;
 		return 1;
 		__NOP(); // success
 	}
 	else
 	{
+		is_connected = 0;
 		return 0;
 		__NOP(); // fail
 	}
@@ -372,6 +376,31 @@ int lorawan_chip_temp(UART_HandleTypeDef *huart)
 		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
 		  return 1;
 	  }
+}
+
+int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
+{
+    char cmd[32];   // enough space for command
+    int len = snprintf(cmd, sizeof(cmd), "AT+BAT %u\r\n", battery_level);
+
+    if (len <= 0 || len >= sizeof(cmd)) {
+        return -1; // encoding error or buffer too small
+    }
+
+    // Flush / clear UART
+    HAL_UART_AbortReceive(huart);
+    __HAL_UART_FLUSH_DRREGISTER(huart);
+    __HAL_UART_CLEAR_IDLEFLAG(huart);
+    __HAL_UART_CLEAR_FLAG(huart,
+        UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+
+    // Transmit command
+    if (HAL_UART_Transmit(huart, (uint8_t*)cmd, (uint16_t)len, 300) != HAL_OK) {
+        return -2; // TX error
+    }
+
+    HAL_Delay(300);
+    return 0; // success
 }
 
 
@@ -557,19 +586,30 @@ int main(void)
 	{
 		// Reset counter for next cycle
 		wakeup_counter = 0;
-		
 
-		if (first_run)
-		{
+
+//		if (first_run)
+//		{
 			first_run = false;
-			// Perform LoRaWAN operations
-			join(&huart2);
+			// Check for connection again just incase on initial startup, we didn't connect
+			if(is_connected == 0)
+			{
+				join(&huart2);
+			}
 			HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
 			HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
 			scan_i2c_bus();
 			bool i2c_success = sensor_init_and_read();
+			HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 			if (i2c_success)
 			{
+				HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_SET);
+				HAL_Delay(300); // just tto let the power stabalize
+				int aproxBatteryTemp_c = ((calculated_temp - 55) / 10);
+				uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
+				HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
+				lorawan_set_battery_level(&huart2, battery);
+
 				uint8_t payload[5];
 				payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
 				payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
@@ -577,7 +617,7 @@ int main(void)
 				LoRaWAN_SendHex(payload, 3);
 			}
 
-		}
+//		}
 //		configWakeupTime();
 		EnterDeepSleepMode();
 	}
@@ -674,7 +714,7 @@ static void MX_ADC_Init(void)
   hadc.Init.OversamplingMode = DISABLE;
   hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
   hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  hadc.Init.SamplingTime = ADC_SAMPLETIME_160CYCLES_5;
   hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
   hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc.Init.ContinuousConvMode = DISABLE;
@@ -926,15 +966,9 @@ void configWakeupTime()
   */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
-  /* Wake up from deep sleep every 15 seconds */
   /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
 
   wakeup_counter++;
-  HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_RESET);
-  
-  /* For debugging: you can add LED toggle here to see wake-ups every 15 seconds */
-  /* If you have an LED, uncomment next line to see it blink every 15 seconds */
-  /* HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin); */
   
   /* Clear the wake-up timer flag to acknowledge the interrupt */
   __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc, RTC_FLAG_WUTF);

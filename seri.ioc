@@ -1,4 +1,6 @@
 #MicroXplorer Configuration settings - do not modify
+ADC.IPParameters=SamplingTime
+ADC.SamplingTime=ADC_SAMPLETIME_160CYCLES_5
 CAD.formats=
 CAD.pinconfig=
 CAD.provider=

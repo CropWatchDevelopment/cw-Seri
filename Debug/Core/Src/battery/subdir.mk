@@ -5,13 +5,13 @@
 
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
-../Core/Src/battery/battery.c 
+../Core/Src/battery/vbat_lorawan.c 
 
 OBJS += \
-./Core/Src/battery/battery.o 
+./Core/Src/battery/vbat_lorawan.o 
 
 C_DEPS += \
-./Core/Src/battery/battery.d 
+./Core/Src/battery/vbat_lorawan.d 
 
 
 # Each subdirectory must supply rules for building sources it contributes
@@ -21,7 +21,7 @@ Core/Src/battery/%.o Core/Src/battery/%.su Core/Src/battery/%.cyclo: ../Core/Src
 clean: clean-Core-2f-Src-2f-battery
 
 clean-Core-2f-Src-2f-battery:
-	-$(RM) ./Core/Src/battery/battery.cyclo ./Core/Src/battery/battery.d ./Core/Src/battery/battery.o ./Core/Src/battery/battery.su
+	-$(RM) ./Core/Src/battery/vbat_lorawan.cyclo ./Core/Src/battery/vbat_lorawan.d ./Core/Src/battery/vbat_lorawan.o ./Core/Src/battery/vbat_lorawan.su
 
 .PHONY: clean-Core-2f-Src-2f-battery
 
