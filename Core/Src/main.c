@@ -276,30 +276,6 @@ int SendData(UART_HandleTypeDef *huart, char* data)
 //	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
 	  return 1;
-	/*
-		ACK  The message was sent and acknowledged by the LNS
-		FAIL Sending of the message was failed
-		SENT The message was sent successfully but not acknowledged by the LNS
-
-		----Sample Response (no response downlink or what ever):
-		00000000 0a 31 0d 0a 4f 4b 0d 0a   4f 4b 0d 0a 54 58 3a 20 	␊1␍␊OK␍␊  OK␍␊TX:
-		00000016 5b 53 45 4e 54 5d 2c 20   43 3a 37 2c 20 46 3a 39 	[SENT],   C:7, F:9
-		00000032 32 32 30 30 30 30 30 30   48 7a 2c 20 44 52 3a 35 	22000000  Hz, DR:5
-		00000048 0d                                                	␍
-
-		----Sample Response WITH data comin' back, the data should be: EE EE EE EE
-		00000000 0a 4f 4b 0d 0a 41 44 52   58 3a 20 44 52 3a 5b 78 	␊OK␍␊ADR  X: DR:[x
-		00000016 5d 20 35 2c 20 50 4f 3a   5b 76 5d 20 38 2c 20 4e 	] 5, PO:  [v] 8, N
-		00000032 42 3a 5b 78 5d 20 31 2c   20 43 50 3a 5b 78 5d 20 	B:[x] 1,   CP:[x]
-		00000048 66 66 3a 30 30 2c 20 50   4c 3a 5b 78 5d 20 32 34 	ff:00, P  L:[x] 24
-		00000064 32 0d 0a 54 58 3a 20 5b   53 45 4e 54 5d 2c 20 43 	2␍␊TX: [  SENT], C
-		00000080 3a 35 2c 20 46 3a 39 32   32 38 30 30 30 30 30 48 	:5, F:92  2800000H
-		00000096 7a 2c 20 44 52 3a 35 0d   0a 52 58 3a 20 57 3a 31 	z, DR:5␍  ␊RX: W:1
-		00000112 2c 20 50 3a 31 2c 20 43   3a 34 2c 20 46 3a 39 32 	, P:1, C  :4, F:92
-		00000128 32 36 30 30 30 30 30 48   7a 2c 20 44 52 3a 35 2c 	2600000H  z, DR:5,
-		00000144 20 52 3a 2d 39 33 64 42   6d 2c 20 53 3a 38 64 42 	 R:-93dB  m, S:8dB
-		00000160 2c 20 45 45 45 45 45 45   45 45 0d                	, EEEEEE  EE␍
-	*/
 }
 
 int lorawan_chip_temp(UART_HandleTypeDef *huart)
@@ -390,12 +366,35 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
     // Copy suffix
     for (size_t i = 0; i < suffix_len; ++i) txbuf[idx++] = (uint8_t)suffix[i];
 
-  dbg_print_u32("SEND:len", (uint32_t)length);
+  // dbg_print_u32("SEND:len", (uint32_t)length);
   HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
     HAL_Delay(300);
     // Exactly one TX
   HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300);
   dbg_print_line("SEND:done");
+}
+
+void LoRaWAN_SendError(uint8_t error)
+{
+    char cmd[32];
+
+    // "AT" keep-alive
+    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+    HAL_Delay(300);
+
+    // Set port to 10
+    HAL_UART_Transmit(&huart2, (uint8_t*)"ATS 629=10\r\n", 12, 300);
+    HAL_Delay(300);
+
+    // Build the send command, e.g. AT+SEND "01"\r\n
+    int len = snprintf(cmd, sizeof(cmd), "AT+SEND \"%02u\"\r\n", error);
+    if (len > 0 && len < (int)sizeof(cmd)) {
+        HAL_UART_Transmit(&huart2, (uint8_t*)cmd, (uint16_t)len, 300);
+    }
+
+    // Restore port back to 1
+    HAL_UART_Transmit(&huart2, (uint8_t*)"ATS 629=1\r\n", 11, 300);
+    HAL_Delay(300);
 }
 
 
@@ -472,54 +471,6 @@ int main(void)
 
 
 
-//  lorawan_is_config_required(&huart2);
-
-//  float batteryVoltage = ReadBatteryVoltage();
-//  char buf[32];
-//  int len = snprintf(buf, sizeof(buf), "%.2f\r\n", batteryVoltage);  // format with 2 decimals
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-  HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -538,8 +489,8 @@ int main(void)
 
 	  wakes_accum += ticks;
 
-	  dbg_print_u32("Loop:wakes_accum", wakes_accum);
-	  dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+	  // dbg_print_u32("Loop:wakes_accum", wakes_accum);
+	  // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
 
 	  bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
   
@@ -555,7 +506,7 @@ int main(void)
     wakeup_counter = 0;   // reset for next cycle
     wakes_accum = 0;
     first_run = false;
-    dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+    // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
     if (is_connected == 0)
     {
       join(&huart2);
@@ -574,12 +525,19 @@ int main(void)
       HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
       lorawan_set_battery_level(&huart2, battery);
 
-      uint8_t payload[5];
+      uint8_t payload[5] = {0};
       payload[0] = (uint8_t)(calculated_temp >> 8);
       payload[1] = (uint8_t)(calculated_temp & 0xFF);
       payload[2] = calculated_hum;
       LoRaWAN_SendHex(payload, 3);
-  dbg_print_line("TX:done");
+      // dbg_print_line("TX:done");
+    }
+    else
+    {
+    	// We FAILED to get a good reading for whatever reason
+    	// We need to specify why soon...
+    	uint8_t errorCode = 1;
+    	LoRaWAN_SendError(errorCode);
     }
   }
   // Always go back to deep sleep to allow next RTC wake
@@ -915,7 +873,6 @@ static void MX_GPIO_Init(void)
 void configWakeupTime()
 {
   // Optional visual indicator that we (re)armed the wake-up
-  HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
   uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u;  // 32 seconds default
   // Deactivate previous timer before re-arming (HAL recommendation when changing value)
   HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);

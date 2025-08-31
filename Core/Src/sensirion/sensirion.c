@@ -18,6 +18,19 @@ uint16_t calculated_temp;
 uint8_t  calculated_hum;
 int16_t i2c_error_code = 0;
 
+// Humidity 0..100 %RH (rounded)
+static inline uint8_t rh_from_ticks(uint16_t hum_ticks) {
+    // (hum_ticks * 100 + 32767) / 65535  -> round to nearest
+    return (uint8_t)((((uint32_t)hum_ticks) * 100U + 32767U) / 65535U);
+}
+
+// Temperature in centi-degrees C (e.g., 2534 => 25.34 °C)
+static inline int16_t tc_x100_from_ticks(uint16_t temp_ticks) {
+    // t[°C] = -45 + 175 * ticks / 65535
+    // Multiply by 100 to keep 0.01°C resolution, round with +32767
+    return (int16_t)((((int32_t)temp_ticks) * 17500 + 32767) / 65535 - 4500);
+}
+
 void scan_i2c_bus(void)
 {
 	// we re-set these to false because we want to check this every time for safety
@@ -30,7 +43,11 @@ void scan_i2c_bus(void)
 
 bool sensor_init_and_read(void)
 {
-    if (!has_sensor_1 && !has_sensor_2) {
+	// If sensor A is not initialized
+	//            OR
+	// sensor B is not initialized
+	// Throw an error
+    if (!has_sensor_1 || !has_sensor_2) {
     	i2c_error_code = NO_SENSORS_FOUND;
         return false;
     }
@@ -44,6 +61,7 @@ bool sensor_init_and_read(void)
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT43_I2C_ADDR_44);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_1, &hum_ticks_1);
+        if (i2c_error_code) return false; // If Read hit a hard fault, throw an error
     }
 
     if (has_sensor_2) {
@@ -52,20 +70,30 @@ bool sensor_init_and_read(void)
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT40_I2C_ADDR_46);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2);
+        if (i2c_error_code) return false; // If Read hit a hard fault, throw an error
     }
 
     calculated_temp            = (temp_ticks_1 / 100U) + 55U;
     uint16_t calculated_temp_2 = (temp_ticks_2 / 100U) + 55U;
-    calculated_hum             = (hum_ticks_1 / 100U);
-    uint8_t  calculated_hum_2  = (hum_ticks_2 / 100U);
+    calculated_hum    = rh_from_ticks(hum_ticks_1);
+//    uint8_t  calculated_hum_2  = rh_from_ticks(hum_ticks_2); // Not used now, maybe later
 
     // compute raw differences (signed)
     int16_t temp_diff = (int16_t)calculated_temp - (int16_t)calculated_temp_2;
-    int16_t hum_diff  = (int16_t)calculated_hum - (int16_t)calculated_hum_2;
+//    int16_t hum_diff  = (int16_t)calculated_hum - (int16_t)calculated_hum_2; // Not used now, maybe later
 
     // convert to absolute unsigned values
     uint8_t temp_delta = (uint8_t)abs(temp_diff);
-    uint8_t hum_delta  = (uint8_t)abs(hum_diff);
+//    uint8_t hum_delta  = (uint8_t)abs(hum_diff); // Not used now, maybe later
+
+
+    // if the difference between the 2 temp sensors is greater than 5 degreese celcius,
+    // Then throw an error.
+    // Keeping in mind that the values coming back are multipled by 100, so 264 would be 26.4
+    // and 50 is actually 5.
+    if (temp_delta > 50) {
+    	return false;
+    }
 
     if (i2c_error_code) {
         return false;
