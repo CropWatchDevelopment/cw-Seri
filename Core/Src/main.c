@@ -61,10 +61,13 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
-static volatile uint8_t wakeup_counter = 0;  // Updated inside RTC WakeUp ISR
+
+static volatile uint16_t wakeup_counter = 0;   // incremented in ISR
+static uint16_t wakes_accum = 0;               // main-loop accumulator
+static bool first_run = true; // Flag to ensure first transmission happens immediately
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
-static const uint8_t WAKEUPS_PER_CYCLE = (uint8_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
-static bool first_run = true;  // Flag to ensure first transmission happens immediately
+static const uint16_t WAKEUPS_PER_CYCLE =
+    (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
 /* USER CODE END PV */
 
@@ -137,98 +140,6 @@ char find_char_after(const char *str, const char *keyword) {
     }
     return '\0'; // Not found
 }
-
-
-//typedef struct {
-//    int port;
-//    char data[64];  // Adjust size as needed
-//    bool has_data;
-//} rx_message_t;
-//
-//int parse_rx_message(uint8_t *buffer, rx_message_t *result) {
-//    char *rx_start = strstr((char*)buffer, "RX: ");
-//    if (!rx_start) {
-//        return 0; // No RX message found
-//    }
-//
-//    // Initialize result
-//    result->port = -1;
-//    result->data[0] = '\0';
-//    result->has_data = false;
-//
-//    // Find port (P:x)
-//    char *port_start = strstr(rx_start, "P:");
-//    if (port_start) {
-//        port_start += 2; // Skip "P:"
-//        result->port = atoi(port_start);
-//    }
-//
-//    // Find data after the last comma and space
-//    char *data_start = NULL;
-//    char *current = rx_start;
-//
-//    // Look for the pattern ", " followed by hex data (not a parameter like "S:", "R:", etc.)
-//    while ((current = strstr(current, ", ")) != NULL) {
-//        current += 2; // Skip ", "
-//
-//        // Check if this is a parameter (contains :) or data (hex characters)
-//        char *colon = strchr(current, ':');
-//        char *comma = strchr(current, ',');
-//        char *cr = strchr(current, '\r');
-//
-//        // If no colon before next comma/CR, this might be data
-//        if (!colon || (comma && colon > comma) || (cr && colon > cr)) {
-//            // Check if it looks like hex data (only hex chars, spaces, and end chars)
-//            bool is_hex = true;
-//            char *check = current;
-//            while (*check && *check != '\r' && *check != '\n') {
-//                if (!isxdigit(*check) && *check != ' ') {
-//                    is_hex = false;
-//                    break;
-//                }
-//                check++;
-//            }
-//
-//            if (is_hex && check > current) {
-//                data_start = current;
-//                break;
-//            }
-//        }
-//    }
-//
-//    // Extract data if found
-//    if (data_start) {
-//        int i = 0;
-//        char *end = data_start;
-//
-//        // Find end of data (CR or LF)
-//        while (*end && *end != '\r' && *end != '\n' && i < 63) {
-//            if (*end != ' ') { // Skip spaces
-//                result->data[i++] = *end;
-//            }
-//            end++;
-//        }
-//        result->data[i] = '\0';
-//
-//        if (i > 0) {
-//            result->has_data = true;
-//        }
-//    }
-//
-//    return (result->port != -1) ? 1 : 0;
-//}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -618,6 +529,19 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+
+	  uint16_t ticks;
+	  __disable_irq();
+	  ticks = wakeup_counter;
+	  wakeup_counter = 0;
+	  __enable_irq();
+
+	  wakes_accum += ticks;
+
+	  dbg_print_u32("Loop:wakes_accum", wakes_accum);
+	  dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+
+	  bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
   
   // Verify UART is ready after wake-up
   if (!verify_uart_ready(&huart1) || !verify_uart_ready(&huart2)) {
@@ -625,12 +549,11 @@ int main(void)
     // Additional recovery could be added here if needed
   }
   
-  dbg_print_u32("Loop:wakeup_counter", wakeup_counter);
-  bool do_transmit = (first_run || wakeup_counter >= WAKEUPS_PER_CYCLE);
   if (!do_transmit) { dbg_print_line("Loop:no_tx"); }
   if (do_transmit)
   {
     wakeup_counter = 0;   // reset for next cycle
+    wakes_accum = 0;
     first_run = false;
     dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
     if (is_connected == 0)
@@ -862,11 +785,9 @@ static void MX_RTC_Init(void)
     Error_Handler();
   }
 
-  /** Enable the WakeUp with the configured base interval (e.g. 32 s)
-    * LSE = 32768 Hz, DIV16 -> 2048 Hz tick; counts = seconds * 2048 - 1
-    */
-  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32s => 65535 (max)
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  /** Enable the WakeUp
+  */
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
   {
     Error_Handler();
   }
@@ -892,7 +813,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -1082,7 +1003,7 @@ void EnterDeepSleepMode(void)
 {
   /* Properly deinitialize UARTs before sleep */
   HAL_UART_DeInit(&huart1);
-  HAL_UART_DeInit(&huart2);
+//  HAL_UART_DeInit(&huart2);
   HAL_I2C_DeInit(&hi2c1);
   
   /* Configure all GPIOs for ultra-low power */
@@ -1093,7 +1014,7 @@ void EnterDeepSleepMode(void)
   __HAL_RCC_USART1_CLK_DISABLE();
   __HAL_RCC_USART2_CLK_DISABLE();
   __HAL_RCC_GPIOB_CLK_DISABLE();
-  __HAL_RCC_GPIOC_CLK_DISABLE();
+//  __HAL_RCC_GPIOC_CLK_DISABLE(); // DO NOT DISABLE GPIO C, That is what the Crystal is connected to!!!
   __HAL_RCC_GPIOD_CLK_DISABLE();
   __HAL_RCC_GPIOH_CLK_DISABLE();
   
@@ -1119,7 +1040,6 @@ void EnterDeepSleepMode(void)
   /* Re-enable peripheral clocks */
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_I2C1_CLK_ENABLE();
   __HAL_RCC_USART1_CLK_ENABLE();
   __HAL_RCC_USART2_CLK_ENABLE();
@@ -1130,7 +1050,7 @@ void EnterDeepSleepMode(void)
   /* Re-initialize peripherals with proper sequence */
   MX_I2C1_Init();
   MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
+//  MX_USART2_UART_Init();
   
   /* Resume SysTick */
   HAL_ResumeTick();
