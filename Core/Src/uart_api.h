@@ -35,9 +35,39 @@ typedef struct uart_job_s {
 extern UART_HandleTypeDef huart1;
 extern UART_HandleTypeDef huart2;
 
-bool DBG_Uart_Transmit(uint8_t const * const data_p, uint16_t length, UartJob_t**  status_p);
+
+/**
+  * @brief  Transmit data over the UART dedicated for debug.
+  * @param  data_p: A pointer to the beginning of the data to be transmitted.
+  * @param  length: The number of data bytes to be transmitted.
+  * @param  status_p: A pointer to a UartJob_t, which will provides further details about the status of the transmission.
+  *
+  * @retval true in case transmission started successfully, false if there is been any failure.
+  * @note   This caller shall examine the job status only if the returned value is true. Otherwise it may be invalid.
+  */
+bool DBG_Uart_Transmit(uint8_t const * const data_p, uint16_t length, UartJob_t** status_p);
+
+
+/**
+  * @brief  Transmit data over the UART dedicated for LoRaWan communication.
+  * @param  data_p: A pointer to the beginning of the data to be transmitted.
+  * @param  length: The number of data bytes to be transmitted.
+  * @param  status_p: A pointer to a UartJob_t, which will provides further details about the status of the transmission.
+  *
+  * @retval true in case transmission started successfully, false if there is been any failure.
+  * @note   This caller shall examine the job status only if the returned value is true. Otherwise it may be invalid.
+  */
 bool LORA_Uart_Transmit(uint8_t const * const data_p, uint16_t length, UartJob_t** status_p);
+
+
 #ifdef DEBUG
+/**
+  * @brief  Retrieve the latest JobId allocated for the UART transmission job.
+  * @param  none.
+  *
+  * @retval The 32-bit JobId.
+  * @note   This is available only while debugging and not in a release build.
+  */
 uint32_t GetLatestAllocatedUartTxJobId(void);
 #endif /* DEBUG */
 
