@@ -111,12 +111,6 @@ static void dbg_print_line(const char *s)
   dbg_print(s);
   dbg_print("\r\n");
 }
-static void dbg_print_u32(const char *k, uint32_t v)
-{
-  char buf[64]; int n = snprintf(buf, sizeof(buf), "%s=%lu\r\n", k?k:"?", (unsigned long)v);
-  if (n>0) HAL_UART_Transmit(&huart1, (uint8_t*)buf, (uint16_t)n, 100);
-}
-
 
 char find_char_after(const char *str, const char *keyword) {
     if (!str || !keyword) return '\0';
@@ -253,9 +247,9 @@ int SendData(UART_HandleTypeDef *huart, char* data)
 {
 	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
 	HAL_Delay(300);
-	uint16_t total_rcv = 0;
-	int16_t total_expected = 200;
-	uint8_t rxbuf[256] = {0};
+//	uint16_t total_rcv = 0;
+//	int16_t total_expected = 200;
+//	uint8_t rxbuf[256] = {0};
 	int data_size = strlen(data);
 	HAL_UART_Transmit(&huart2, (uint8_t*)data, data_size, 300);
 //	HAL_UART_Receive(&huart2, rxbuf, 4, 100); // Get the OK back from the sync data send
@@ -328,9 +322,16 @@ int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
 }
 
 
+static void LoRaWAN_set_fport(int fPort) {
+    char cmd[20];  // plenty big for "ATS 629=255\r\n"
+    int n = snprintf(cmd, sizeof(cmd), "ATS 629=%d\r\n", fPort);
+    if (n > 0 && n < (int)sizeof(cmd)) {
+        HAL_UART_Transmit(&huart2, (uint8_t*)cmd, (uint16_t)n, 300);
+    }
+}
 
 
-void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
+void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
 {
     static const char HEX[16] = "0123456789ABCDEF";
     static const char prefix[] = "AT+SEND \"";
@@ -367,34 +368,18 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
     for (size_t i = 0; i < suffix_len; ++i) txbuf[idx++] = (uint8_t)suffix[i];
 
   // dbg_print_u32("SEND:len", (uint32_t)length);
-  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    HAL_Delay(300);
-    // Exactly one TX
-  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300);
-  dbg_print_line("SEND:done");
-}
+  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);  // WAKE MODULE!
+  HAL_Delay(400); // Giving it enough ttime to wake up
 
-void LoRaWAN_SendError(uint8_t error)
-{
-    char cmd[32];
+  // Set FPort from the function argument (dynamic)
+  LoRaWAN_set_fport(fPort);
+  HAL_Delay(300);
 
-    // "AT" keep-alive
-    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    HAL_Delay(300);
+  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300); // SEND THE DATA!
 
-    // Set port to 10
-    HAL_UART_Transmit(&huart2, (uint8_t*)"ATS 629=10\r\n", 12, 300);
-    HAL_Delay(300);
-
-    // Build the send command, e.g. AT+SEND "01"\r\n
-    int len = snprintf(cmd, sizeof(cmd), "AT+SEND \"%02u\"\r\n", error);
-    if (len > 0 && len < (int)sizeof(cmd)) {
-        HAL_UART_Transmit(&huart2, (uint8_t*)cmd, (uint16_t)len, 300);
-    }
-
-    // Restore port back to 1
-    HAL_UART_Transmit(&huart2, (uint8_t*)"ATS 629=1\r\n", 11, 300);
-    HAL_Delay(300);
+  // Return to fPort 1, probably not needed, but lets do it anyhow
+  LoRaWAN_set_fport(1);
+  // HAL_Delay(300); // Not sure if i need this
 }
 
 
@@ -511,33 +496,58 @@ int main(void)
     {
       join(&huart2);
     }
+
+    // Get I2C Data
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
     HAL_Delay(1000); // sensor power-up and stabilization
     scan_i2c_bus();
-    bool i2c_success = sensor_init_and_read();
+    int i2c_success = sensor_init_and_read();
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
-    if (i2c_success)
+
+    // Format data and send
+    uint8_t payload[5] = {0};
+    if (i2c_success == 0)
     {
       HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_SET);
       HAL_Delay(300);
-      int aproxBatteryTemp_c = ((calculated_temp - 55) / 10);
+      int aproxBatteryTemp_c = ((calculated_temp_1 - 55) / 10);
       uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
       HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
       lorawan_set_battery_level(&huart2, battery);
 
-      uint8_t payload[5] = {0};
-      payload[0] = (uint8_t)(calculated_temp >> 8);
-      payload[1] = (uint8_t)(calculated_temp & 0xFF);
-      payload[2] = calculated_hum;
-      LoRaWAN_SendHex(payload, 3);
+      payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+      payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+      payload[2] = calculated_hum_1;
+      LoRaWAN_SendHex(payload, 3, 1);
       // dbg_print_line("TX:done");
     }
     else
     {
     	// We FAILED to get a good reading for whatever reason
     	// We need to specify why soon...
-    	uint8_t errorCode = 1;
-    	LoRaWAN_SendError(errorCode);
+
+    	// 1,2,3 all are sensor failures and will not contain data
+    	if (i2c_success == 1 || i2c_success == 2 || i2c_success == 3)
+    	{
+			uint8_t code = (uint8_t)i2c_success;
+			LoRaWAN_SendHex(&code, 1, 10);
+
+    	}
+    	// if i2c_success is 4, then the sensors returned data, but do not agree on the correct temp
+    	if (i2c_success == 4)
+    	{
+    		//add the dis-agreed sensor info to payload
+
+    		payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+    		payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+    		payload[2] = calculated_hum_1;
+
+    		payload[3] = (uint8_t)(calculated_temp_2 >> 8);
+		    payload[4] = (uint8_t)(calculated_temp_2 & 0xFF);
+		    payload[5] = calculated_hum_2;
+    		LoRaWAN_SendHex(payload, 6, 11); // send both dis-agreed values and an error
+    	}
+
     }
   }
   // Always go back to deep sleep to allow next RTC wake
