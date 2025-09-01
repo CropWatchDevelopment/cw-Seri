@@ -23,7 +23,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include <string.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include "sensirion/sensirion.h"
 #include "battery/battery.h"
@@ -62,10 +61,15 @@ static uint8_t wakeup_counter = 0;  // Counter for sleep intervals (calculated b
 static const uint8_t WAKEUPS_PER_CYCLE = (SLEEP_TIME_MINUTES * 60) / 32;
 static bool first_run = true;  // Flag to ensure first transmission happens immediately
 
+/* Buffer used for transmission */
+uint8_t aTxBuffer[] = " ****UART_TRANSMISSION_BUFFER****  ****UART_TRANSMISSION_BUFFER****  ****UART_TRANSMISSION_BUFFER**** ";
+/* Buffer used for reception */
+uint8_t aRxBuffer[RXBUFFERSIZE];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
+static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART1_UART_Init(void);
@@ -74,6 +78,8 @@ static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
+ void Error_Handler(void);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
