@@ -30,6 +30,7 @@ uint16_t sht4x_rh_centi_from_ticks(uint16_t rh_ticks) {
 // Variable definitions (declared as extern in the header)
 bool     has_sensor_1 = false;
 bool     has_sensor_2 = false;
+bool     has_soil_sensor_1 = false;
 uint16_t temp_ticks_1 = 0;
 uint16_t hum_ticks_1  = 0;
 uint16_t temp_ticks_2 = 0;
@@ -81,6 +82,10 @@ int sensor_init_and_read(void)
         sht4x_init(SHT40_I2C_ADDR_46);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2);
         if (i2c_error_code) return 3; // hard fault on read
+    }
+
+    if (has_soil_sensor_1) {
+    	__NOP();
     }
 
     // Convert using exact integer math with rounding (centi-units)
