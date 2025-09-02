@@ -1,0 +1,6 @@
+../Core/Src/freertos.c:68:13:vApplicationIdleHook	8	static
+../Core/Src/freertos.c:83:13:PreSleepProcessing	16	static
+../Core/Src/freertos.c:88:13:PostSleepProcessing	16	static
+../Core/Src/freertos.c:98:6:vApplicationGetIdleTaskMemory	24	static
+../Core/Src/freertos.c:112:6:MX_FREERTOS_Init	48	static
+../Core/Src/freertos.c:151:6:StartDefaultTask	16	static

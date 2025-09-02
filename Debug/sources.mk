@@ -22,9 +22,13 @@ C_DEPS :=
 
 # Every subdirectory with source files must be described here
 SUBDIRS := \
-Core/Src/battery \
 Core/Src \
+Core/Src/battery \
 Core/Src/sensirion \
 Core/Startup \
 Drivers/STM32L0xx_HAL_Driver/Src \
+Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS \
+Middlewares/Third_Party/FreeRTOS/Source \
+Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM0 \
+Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang \
 
