@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdint.h>
+// #include "uart_api.h"  // Commented out - using simplified UART communication
 #include "sensirion/sensirion.h"
 #include "battery/battery.h"
 /* USER CODE END Includes */
@@ -85,6 +86,30 @@ void EnterDeepSleepMode(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// Simple UART test function for debugging
+int test_uart_communication(UART_HandleTypeDef *huart)
+{
+    uint8_t rxbuf[32] = {0};
+    
+    // Clear UART flags
+    HAL_UART_AbortReceive(huart);
+    __HAL_UART_FLUSH_DRREGISTER(huart);
+    __HAL_UART_CLEAR_IDLEFLAG(huart);
+    
+    // Send simple AT command
+    HAL_UART_Transmit(huart, (uint8_t*)"AT\r\n", 4, 1000);
+    HAL_Delay(500);
+    
+    // Try to receive response
+    HAL_StatusTypeDef status = HAL_UART_Receive(huart, rxbuf, sizeof(rxbuf)-1, 1000);
+    
+    // Check if we got "OK" response
+    if (status == HAL_OK && strstr((char*)rxbuf, "OK")) {
+        return 1; // Communication working
+    }
+    
+    return 0; // Communication failed
+}
 
 char find_char_after(const char *str, const char *keyword) {
     if (!str || !keyword) return '\0';
@@ -266,39 +291,67 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 }
 
 
+// ...existing code...
+
 int join(UART_HandleTypeDef *huart)
 {
-	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-	HAL_Delay(300); // let OK come back!
-	uint16_t total_rcv = 0;
-	int16_t total_expected =11;
-	uint8_t rxbuf[256] = {0};
-	HAL_UART_Transmit(&huart2, (uint8_t*)"AT+JOIN\r\n", 9, 300);
-	HAL_UART_Receive(&huart2, rxbuf, 4, 100);
-	__HAL_UART_FLUSH_DRREGISTER(&huart2);
-	__HAL_UART_CLEAR_IDLEFLAG(&huart2);
-
-	while (total_expected > 0)
-	{
-		  HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 10000);
-		  total_expected -= total_rcv;
-	}
-
-	__HAL_UART_FLUSH_DRREGISTER(&huart2);
-	__HAL_UART_CLEAR_IDLEFLAG(&huart2);
-
-	char result = find_char_after(rxbuf, "JOIN: [");
-	char error14 = find_char_after(rxbuf, "\nERROR 1");
-	if (result == 'O' || error14 == '4')
-	{
-		return 1;
-		__NOP(); // success
-	}
-	else
-	{
-		return 0;
-		__NOP(); // fail
-	}
+    if (is_connected) return 1; // Already connected
+    
+    uint8_t rxbuf[256] = {0};
+    uint16_t total_rcv = 0;
+    
+    // Clear UART flags first
+    HAL_UART_AbortReceive(&huart2);
+    __HAL_UART_FLUSH_DRREGISTER(&huart2);
+    __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+    __HAL_UART_CLEAR_FLAG(&huart2, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+    
+    // Send AT command to wake up module
+    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+    HAL_Delay(300);
+    
+    // Receive AT response
+    HAL_UART_Receive(&huart2, rxbuf, 4, 100);
+    
+    // Clear buffer and flags again
+    memset(rxbuf, 0, sizeof(rxbuf));
+    HAL_UART_AbortReceive(&huart2);
+    __HAL_UART_FLUSH_DRREGISTER(&huart2);
+    __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+    
+    // Send JOIN command
+    HAL_UART_Transmit(&huart2, (uint8_t*)"AT+JOIN\r\n", 9, 300);
+    
+    // Wait for join response with longer timeout (15 seconds for network join)
+    uint32_t start_time = HAL_GetTick();
+    while (total_rcv < 200 && (HAL_GetTick() - start_time) < 15000) {
+        uint16_t received = 0;
+        HAL_StatusTypeDef status = HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 
+                                                           sizeof(rxbuf) - total_rcv, 
+                                                           &received, 2000);
+        total_rcv += received;
+        
+        if (received == 0) {
+            HAL_Delay(500); // Wait a bit more for slow responses
+        }
+        
+        // Check if we have a complete response
+        if (strstr((char*)rxbuf, "JOIN: [") || strstr((char*)rxbuf, "ERROR")) {
+            break;
+        }
+    }
+    
+    // Parse the response
+    char result = find_char_after((const char*)rxbuf, "JOIN: [");
+    char error14 = find_char_after((const char*)rxbuf, "\nERROR 1");
+    
+    if (result == 'O' || error14 == '4') {
+        is_connected = 1;
+        return 1;
+    }
+    
+    is_connected = 0;
+    return 0;
 }
 
 
@@ -468,83 +521,6 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
-//  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
-
-  // Set LoRaWAN Settings
-//  HAL_UART_Transmit(&huart2, "ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
-//  HAL_UART_Transmit(&huart2, "ATS 603=0\r\n", 11, 300); // Set CLASS to A
-//  HAL_UART_Transmit(&huart2, "ATS 604=0\r\n", 11, 300); // Conformed 0 = NO, 1 = yes
-//  HAL_UART_Transmit(&huart2, "ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
-//  HAL_UART_Transmit(&huart2, "ATS 302=9600\r\n", 14, 300);
-
-  // Set Dev EUI, App Key, and JOIN KEY
-//  HAL_UART_Transmit(&huart2, "AT%S 500=\"0025CA00000055F70025CA00000055F7\"\r\n", 45, 300); // APP KEY
-//  HAL_UART_Transmit(&huart2, "AT%S 501=\"0025CA00000055F7\"\r\n", 29, 300); // DEV EUI
-//  HAL_UART_Transmit(&huart2, "AT%S 502=\"0000000000000000\"\r\n", 29, 300); // JOIN EUI
-//
-//  HAL_UART_Transmit(&huart2, "ATS 213=2000\r\n", 14, 300); // Set CLASS to A
-//  HAL_UART_Transmit(&huart2, "AT&W\r\n", 6, 300); // SAVE ALL!
-//  HAL_UART_Transmit(&huart2, "ATZ\r\n", 5, 300); // Soft reboot!
-
-//  HAL_UART_Transmit(&huart2, "AT+JOIN\r\n", 9, 300); // Test join the network
-//  __NOP();
-//
-//  while (1)
-//  {
-//	  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300);
-//	  HAL_UART_Transmit(&huart2, "AT+SEND \"AABBCC\"\r\n", 18, 300);
-//
-//	  HAL_Delay(10);
-//  }
-
-
-
-//  lorawan_is_config_required(&huart2);
-
-//  float batteryVoltage = ReadBatteryVoltage();
-//  char buf[32];
-//  int len = snprintf(buf, sizeof(buf), "%.2f\r\n", batteryVoltage);  // format with 2 decimals
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
 
   /* USER CODE END 2 */
@@ -564,27 +540,34 @@ int main(void)
 		// Reset counter for next cycle
 		wakeup_counter = 0;
 		
-
-		if (first_run)
-		{
-			first_run = false;
-			// Perform LoRaWAN operations
-			join(&huart2);
-			HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-			HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
-			scan_i2c_bus();
-			bool i2c_success = sensor_init_and_read();
-			if (i2c_success)
-			{
-				uint8_t payload[5];
-				payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
-				payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
-				payload[2] = calculated_hum;
-				LoRaWAN_SendHex(payload, 3);
+		// Always check connection status and attempt to join if needed
+		if (is_connected == 0) {
+			// First test basic UART communication
+			if (test_uart_communication(&huart2)) {
+				// If basic communication works, attempt to join
+				join(&huart2);
 			}
-
 		}
-//		configWakeupTime();
+		
+		// Perform sensor operations every transmission cycle
+		HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+		HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
+		scan_i2c_bus();
+		bool i2c_success = sensor_init_and_read();
+		
+		if (i2c_success && is_connected)
+		{
+			uint8_t payload[5];
+			payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
+			payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
+			payload[2] = calculated_hum;
+			LoRaWAN_SendHex(payload, 3);
+		}
+		
+		// Turn off I2C power after sensor operations
+		HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+		
+		first_run = false;
 		EnterDeepSleepMode();
 	}
 
@@ -819,7 +802,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 38400;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
@@ -855,7 +838,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 38400;
+  huart2.Init.BaudRate = 9600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -1013,7 +996,8 @@ void EnterDeepSleepMode(void)
   /* Disable unnecessary peripheral clocks */
   __HAL_RCC_I2C1_CLK_DISABLE();
   __HAL_RCC_USART1_CLK_DISABLE();
-  __HAL_RCC_USART2_CLK_DISABLE();
+  // Keep UART2 clock enabled for LoRaWAN communication
+  // __HAL_RCC_USART2_CLK_DISABLE();
 //  __HAL_RCC_GPIOA_CLK_DISABLE();
   __HAL_RCC_GPIOB_CLK_DISABLE();
   __HAL_RCC_GPIOC_CLK_DISABLE();

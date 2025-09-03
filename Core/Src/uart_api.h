@@ -10,7 +10,7 @@ extern "C" {
 
 typedef enum uart_ids_e {
     DEBUG_UART = 0,
-    LORAWAN_UART,
+    LORAWAN_UART = 1,
     ERROR_UART,
     SUPPORTED_UARTS = ERROR_UART
 

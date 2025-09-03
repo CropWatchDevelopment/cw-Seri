@@ -34,6 +34,9 @@ static bool Uart_Receiver(UART_HandleTypeDef *const huart, uint8_t* data_p, uint
 static bool Uart_StartTransmission(UartId_t uart_id, UART_HandleTypeDef *const huart, uint8_t const * const data_p, uint16_t length);
 static bool Uart_StartReceiving(UartId_t uart_id, UART_HandleTypeDef *const huart, uint8_t* data_p, uint16_t expected_length);
 
+#define DBG_UART_HANDLE    (&huart1)
+#define LORAWAN_UART_HANDLE (&huart2)
+
 /******************************************************************************/
 /* --- API -------------------------------------------------------------------*/
 /******************************************************************************/
