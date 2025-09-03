@@ -1,0 +1,4 @@
+../Core/Src/battery/vbat_lorawan.c:43:10:vbat_cold_compensation_mv	3
+../Core/Src/battery/vbat_lorawan.c:52:6:vbat_read_mv	9
+../Core/Src/battery/vbat_lorawan.c:80:9:lorawan_encode_battery	8
+../Core/Src/battery/vbat_lorawan.c:121:9:vbat_measure_and_encode	1

@@ -1,0 +1,5 @@
+# Running Unit Tests for TTN-Decoder.js
+
+Simply run:
+`pnpm i`
+`npm test`

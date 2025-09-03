@@ -21,12 +21,13 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "uart_api.h"  // Commented out - using simplified UART communication
+#include "battery/vbat_lorawan.h"
+#include <stdio.h>
 #include <stdbool.h>
-#include <string.h>
 #include <stdint.h>
-// #include "uart_api.h"  // Commented out - using simplified UART communication
+#include <string.h>
 #include "sensirion/sensirion.h"
-#include "battery/battery.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,7 +37,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SLEEP_TIME_MINUTES 1  // Sleep time in minutes between LoRaWAN transmissions
+#define SLEEP_TIME_MINUTES 10  // Sleep time in minutes between LoRaWAN transmissions
+// Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
+#define SLEEP_INTERVAL_SECONDS 30
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -57,10 +60,13 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
-static uint8_t wakeup_counter = 0;  // Counter for sleep intervals (calculated based on SLEEP_TIME_MINUTES)
-// Calculate how many 32-second intervals make up SLEEP_TIME_MINUTES
-static const uint8_t WAKEUPS_PER_CYCLE = (SLEEP_TIME_MINUTES * 60) / 32;
-static bool first_run = true;  // Flag to ensure first transmission happens immediately
+
+static volatile uint16_t wakeup_counter = 0;   // incremented in ISR
+static uint16_t wakes_accum = 0;               // main-loop accumulator
+static bool first_run = true; // Flag to ensure first transmission happens immediately
+// Number of wakeups per transmission cycle (ceil division to avoid truncation)
+static const uint16_t WAKEUPS_PER_CYCLE =
+    (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
 /* Buffer used for transmission */
 uint8_t aTxBuffer[] = " ****UART_TRANSMISSION_BUFFER****  ****UART_TRANSMISSION_BUFFER****  ****UART_TRANSMISSION_BUFFER**** ";
@@ -86,29 +92,30 @@ void EnterDeepSleepMode(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// Simple UART test function for debugging
-int test_uart_communication(UART_HandleTypeDef *huart)
+// UART state verification function
+static bool verify_uart_ready(UART_HandleTypeDef *huart)
 {
-    uint8_t rxbuf[32] = {0};
-    
-    // Clear UART flags
-    HAL_UART_AbortReceive(huart);
-    __HAL_UART_FLUSH_DRREGISTER(huart);
-    __HAL_UART_CLEAR_IDLEFLAG(huart);
-    
-    // Send simple AT command
-    HAL_UART_Transmit(huart, (uint8_t*)"AT\r\n", 4, 1000);
-    HAL_Delay(500);
-    
-    // Try to receive response
-    HAL_StatusTypeDef status = HAL_UART_Receive(huart, rxbuf, sizeof(rxbuf)-1, 1000);
-    
-    // Check if we got "OK" response
-    if (status == HAL_OK && strstr((char*)rxbuf, "OK")) {
-        return 1; // Communication working
-    }
-    
-    return 0; // Communication failed
+  return (huart != NULL);  // Simplified check for now
+}
+
+// Debug logging helpers over huart1 (115200 baud)
+static void dbg_print(const char *s)
+{
+  if (!s) return;
+  size_t n = strlen(s);
+  HAL_StatusTypeDef status = HAL_UART_Transmit(&huart1, (uint8_t*)s, (uint16_t)n, 100);
+  if (status != HAL_OK) {
+    // UART failed, try to recover
+    HAL_UART_DeInit(&huart1);
+    HAL_Delay(10);
+    MX_USART1_UART_Init();
+  }
+}
+static void dbg_print_line(const char *s)
+{
+  if (!s) return;
+  dbg_print(s);
+  dbg_print("\r\n");
 }
 
 char find_char_after(const char *str, const char *keyword) {
@@ -133,134 +140,6 @@ char find_char_after(const char *str, const char *keyword) {
     }
     return '\0'; // Not found
 }
-
-
-//typedef struct {
-//    int port;
-//    char data[64];  // Adjust size as needed
-//    bool has_data;
-//} rx_message_t;
-//
-//int parse_rx_message(uint8_t *buffer, rx_message_t *result) {
-//    char *rx_start = strstr((char*)buffer, "RX: ");
-//    if (!rx_start) {
-//        return 0; // No RX message found
-//    }
-//
-//    // Initialize result
-//    result->port = -1;
-//    result->data[0] = '\0';
-//    result->has_data = false;
-//
-//    // Find port (P:x)
-//    char *port_start = strstr(rx_start, "P:");
-//    if (port_start) {
-//        port_start += 2; // Skip "P:"
-//        result->port = atoi(port_start);
-//    }
-//
-//    // Find data after the last comma and space
-//    char *data_start = NULL;
-//    char *current = rx_start;
-//
-//    // Look for the pattern ", " followed by hex data (not a parameter like "S:", "R:", etc.)
-//    while ((current = strstr(current, ", ")) != NULL) {
-//        current += 2; // Skip ", "
-//
-//        // Check if this is a parameter (contains :) or data (hex characters)
-//        char *colon = strchr(current, ':');
-//        char *comma = strchr(current, ',');
-//        char *cr = strchr(current, '\r');
-//
-//        // If no colon before next comma/CR, this might be data
-//        if (!colon || (comma && colon > comma) || (cr && colon > cr)) {
-//            // Check if it looks like hex data (only hex chars, spaces, and end chars)
-//            bool is_hex = true;
-//            char *check = current;
-//            while (*check && *check != '\r' && *check != '\n') {
-//                if (!isxdigit(*check) && *check != ' ') {
-//                    is_hex = false;
-//                    break;
-//                }
-//                check++;
-//            }
-//
-//            if (is_hex && check > current) {
-//                data_start = current;
-//                break;
-//            }
-//        }
-//    }
-//
-//    // Extract data if found
-//    if (data_start) {
-//        int i = 0;
-//        char *end = data_start;
-//
-//        // Find end of data (CR or LF)
-//        while (*end && *end != '\r' && *end != '\n' && i < 63) {
-//            if (*end != ' ') { // Skip spaces
-//                result->data[i++] = *end;
-//            }
-//            end++;
-//        }
-//        result->data[i] = '\0';
-//
-//        if (i > 0) {
-//            result->has_data = true;
-//        }
-//    }
-//
-//    return (result->port != -1) ? 1 : 0;
-//}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//int lorawan_is_config_required(UART_HandleTypeDef *huart)
-//{
-//	  HAL_UART_Transmit(huart, (uint8_t*)"AT\r\n", 4, 300);
-//	uint8_t rxwakebuf[16] = {0};
-//	  HAL_UART_Receive(huart, rxwakebuf, 6, 200);
-//	  uint8_t rxbuf[16] = {0};
-//	  // Totally Flush buffer and stuff
-//	  HAL_UART_AbortReceive(huart);
-//	  __HAL_UART_FLUSH_DRREGISTER(huart);
-//	  __HAL_UART_CLEAR_IDLEFLAG(huart);
-//	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-//
-//	  HAL_UART_Transmit(&huart2, (uint8_t*)"AT%S 502=?\r\n", 12, 300);
-//	  HAL_UART_Receive(huart, rxbuf, 16, 200);
-//
-//	  if (rxbuf[1] == '0')
-//	  {
-//		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-//		  return 0;
-//	  }
-//	  else
-//	  {
-//		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-//		  return 1;
-//	  }
-//}
-
-
 
 int lorawan_is_connected(UART_HandleTypeDef *huart)
 {
@@ -295,63 +174,43 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
-    if (is_connected) return 1; // Already connected
-    
-    uint8_t rxbuf[256] = {0};
-    uint16_t total_rcv = 0;
-    
-    // Clear UART flags first
-    HAL_UART_AbortReceive(&huart2);
-    __HAL_UART_FLUSH_DRREGISTER(&huart2);
-    __HAL_UART_CLEAR_IDLEFLAG(&huart2);
-    __HAL_UART_CLEAR_FLAG(&huart2, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-    
-    // Send AT command to wake up module
-    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    HAL_Delay(300);
-    
-    // Receive AT response
-    HAL_UART_Receive(&huart2, rxbuf, 4, 100);
-    
-    // Clear buffer and flags again
-    memset(rxbuf, 0, sizeof(rxbuf));
-    HAL_UART_AbortReceive(&huart2);
-    __HAL_UART_FLUSH_DRREGISTER(&huart2);
-    __HAL_UART_CLEAR_IDLEFLAG(&huart2);
-    
-    // Send JOIN command
-    HAL_UART_Transmit(&huart2, (uint8_t*)"AT+JOIN\r\n", 9, 300);
-    
-    // Wait for join response with longer timeout (15 seconds for network join)
-    uint32_t start_time = HAL_GetTick();
-    while (total_rcv < 200 && (HAL_GetTick() - start_time) < 15000) {
-        uint16_t received = 0;
-        HAL_StatusTypeDef status = HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 
-                                                           sizeof(rxbuf) - total_rcv, 
-                                                           &received, 2000);
-        total_rcv += received;
-        
-        if (received == 0) {
-            HAL_Delay(500); // Wait a bit more for slow responses
-        }
-        
-        // Check if we have a complete response
-        if (strstr((char*)rxbuf, "JOIN: [") || strstr((char*)rxbuf, "ERROR")) {
-            break;
-        }
-    }
-    
-    // Parse the response
-    char result = find_char_after((const char*)rxbuf, "JOIN: [");
-    char error14 = find_char_after((const char*)rxbuf, "\nERROR 1");
-    
-    if (result == 'O' || error14 == '4') {
-        is_connected = 1;
-        return 1;
-    }
-    
-    is_connected = 0;
+  if (is_connected) { dbg_print_line("JOIN:skip"); return 1; }
+  dbg_print_line("JOIN:start");
+	HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+	HAL_Delay(300); // let OK come back!
+	uint16_t total_rcv = 0;
+	int16_t total_expected =11;
+	uint8_t rxbuf[256] = {0};
+	HAL_UART_Transmit(&huart2, (uint8_t*)"AT+JOIN\r\n", 9, 300);
+	HAL_UART_Receive(&huart2, rxbuf, 4, 100);
+	__HAL_UART_FLUSH_DRREGISTER(&huart2);
+	__HAL_UART_CLEAR_IDLEFLAG(&huart2);
+
+	while (total_expected > 0)
+	{
+		  HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 10000);
+		  total_expected -= total_rcv;
+	}
+
+	__HAL_UART_FLUSH_DRREGISTER(&huart2);
+	__HAL_UART_CLEAR_IDLEFLAG(&huart2);
+
+	char result = find_char_after((const char*)rxbuf, "JOIN: [");
+	char error14 = find_char_after((const char*)rxbuf, "\nERROR 1");
+	if (result == 'O' || error14 == '4')
+	{
+		is_connected = 1;
+    dbg_print_line("JOIN:success");
+    return 1;
+		__NOP(); // success
+	}
+	else
+	{
+		is_connected = 0;
+    dbg_print_line("JOIN:fail");
     return 0;
+		__NOP(); // fail
+	}
 }
 
 
@@ -383,30 +242,6 @@ int SendData(UART_HandleTypeDef *huart, char* data)
 //	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
 	  return 1;
-	/*
-		ACK  The message was sent and acknowledged by the LNS
-		FAIL Sending of the message was failed
-		SENT The message was sent successfully but not acknowledged by the LNS
-
-		----Sample Response (no response downlink or what ever):
-		00000000 0a 31 0d 0a 4f 4b 0d 0a   4f 4b 0d 0a 54 58 3a 20 	␊1␍␊OK␍␊  OK␍␊TX:
-		00000016 5b 53 45 4e 54 5d 2c 20   43 3a 37 2c 20 46 3a 39 	[SENT],   C:7, F:9
-		00000032 32 32 30 30 30 30 30 30   48 7a 2c 20 44 52 3a 35 	22000000  Hz, DR:5
-		00000048 0d                                                	␍
-
-		----Sample Response WITH data comin' back, the data should be: EE EE EE EE
-		00000000 0a 4f 4b 0d 0a 41 44 52   58 3a 20 44 52 3a 5b 78 	␊OK␍␊ADR  X: DR:[x
-		00000016 5d 20 35 2c 20 50 4f 3a   5b 76 5d 20 38 2c 20 4e 	] 5, PO:  [v] 8, N
-		00000032 42 3a 5b 78 5d 20 31 2c   20 43 50 3a 5b 78 5d 20 	B:[x] 1,   CP:[x]
-		00000048 66 66 3a 30 30 2c 20 50   4c 3a 5b 78 5d 20 32 34 	ff:00, P  L:[x] 24
-		00000064 32 0d 0a 54 58 3a 20 5b   53 45 4e 54 5d 2c 20 43 	2␍␊TX: [  SENT], C
-		00000080 3a 35 2c 20 46 3a 39 32   32 38 30 30 30 30 30 48 	:5, F:92  2800000H
-		00000096 7a 2c 20 44 52 3a 35 0d   0a 52 58 3a 20 57 3a 31 	z, DR:5␍  ␊RX: W:1
-		00000112 2c 20 50 3a 31 2c 20 43   3a 34 2c 20 46 3a 39 32 	, P:1, C  :4, F:92
-		00000128 32 36 30 30 30 30 30 48   7a 2c 20 44 52 3a 35 2c 	2600000H  z, DR:5,
-		00000144 20 52 3a 2d 39 33 64 42   6d 2c 20 53 3a 38 64 42 	 R:-93dB  m, S:8dB
-		00000160 2c 20 45 45 45 45 45 45   45 45 0d                	, EEEEEE  EE␍
-	*/
 }
 
 int lorawan_chip_temp(UART_HandleTypeDef *huart)
@@ -433,10 +268,42 @@ int lorawan_chip_temp(UART_HandleTypeDef *huart)
 	  }
 }
 
+int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
+{
+    char cmd[32];   // enough space for command
+    int len = snprintf(cmd, sizeof(cmd), "AT+BAT %u\r\n", battery_level);
+
+    if (len <= 0 || len >= sizeof(cmd)) {
+        return -1; // encoding error or buffer too small
+    }
+
+    // Flush / clear UART
+    HAL_UART_AbortReceive(huart);
+    __HAL_UART_FLUSH_DRREGISTER(huart);
+    __HAL_UART_CLEAR_IDLEFLAG(huart);
+    __HAL_UART_CLEAR_FLAG(huart,
+        UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+
+    // Transmit command
+    if (HAL_UART_Transmit(huart, (uint8_t*)cmd, (uint16_t)len, 300) != HAL_OK) {
+        return -2; // TX error
+    }
+
+    HAL_Delay(300);
+    return 0; // success
+}
 
 
+static void LoRaWAN_set_fport(int fPort) {
+    char cmd[20];  // plenty big for "ATS 629=255\r\n"
+    int n = snprintf(cmd, sizeof(cmd), "ATS 629=%d\r\n", fPort);
+    if (n > 0 && n < (int)sizeof(cmd)) {
+        HAL_UART_Transmit(&huart2, (uint8_t*)cmd, (uint16_t)n, 300);
+    }
+}
 
-void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
+
+void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
 {
     static const char HEX[16] = "0123456789ABCDEF";
     static const char prefix[] = "AT+SEND \"";
@@ -472,16 +339,20 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
     // Copy suffix
     for (size_t i = 0; i < suffix_len; ++i) txbuf[idx++] = (uint8_t)suffix[i];
 
-    HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    HAL_Delay(300);
-    // Exactly one TX
-    HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300);
+  // dbg_print_u32("SEND:len", (uint32_t)length);
+  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);  // WAKE MODULE!
+  HAL_Delay(400); // Giving it enough ttime to wake up
+
+  // Set FPort from the function argument (dynamic)
+  LoRaWAN_set_fport(fPort);
+  HAL_Delay(300);
+
+  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300); // SEND THE DATA!
+
+  // Return to fPort 1, probably not needed, but lets do it anyhow
+  LoRaWAN_set_fport(1);
+  // HAL_Delay(300); // Not sure if i need this
 }
-
-
-
-
-
 
 /* USER CODE END 0 */
 
@@ -522,7 +393,6 @@ int main(void)
   /* USER CODE BEGIN 2 */
 
   HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
-
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -532,47 +402,93 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	// Check if it's time for LoRaWAN transmission
-	// Transmit on first run, then every WAKEUPS_PER_CYCLE wake-ups
-	// With SLEEP_TIME_MINUTES=2, WAKEUPS_PER_CYCLE=8, so we transmit every 8 wake-ups
-	if (first_run || wakeup_counter >= WAKEUPS_PER_CYCLE)
-	{
-		// Reset counter for next cycle
-		wakeup_counter = 0;
-		
-		// Always check connection status and attempt to join if needed
-		if (is_connected == 0) {
-			// First test basic UART communication
-			if (test_uart_communication(&huart2)) {
-				// If basic communication works, attempt to join
-				join(&huart2);
-			}
-		}
-		
-		// Perform sensor operations every transmission cycle
-		HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-		HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
-		scan_i2c_bus();
-		bool i2c_success = sensor_init_and_read();
-		
-		if (i2c_success && is_connected)
-		{
-			uint8_t payload[5];
-			payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
-			payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
-			payload[2] = calculated_hum;
-			LoRaWAN_SendHex(payload, 3);
-		}
-		
-		// Turn off I2C power after sensor operations
-		HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
-		
-		first_run = false;
-		EnterDeepSleepMode();
-	}
 
+	  uint16_t ticks;
+	  __disable_irq();
+	  ticks = wakeup_counter;
+	  wakeup_counter = 0;
+	  __enable_irq();
 
+	  wakes_accum += ticks;
 
+	  // dbg_print_u32("Loop:wakes_accum", wakes_accum);
+	  // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+
+	  bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
+  
+  // Verify UART is ready after wake-up
+  if (!verify_uart_ready(&huart1) || !verify_uart_ready(&huart2)) {
+    dbg_print_line("UART:reinit_failed");
+    // Additional recovery could be added here if needed
+  }
+  
+  if (!do_transmit) { dbg_print_line("Loop:no_tx"); }
+  if (do_transmit)
+  {
+    wakeup_counter = 0;   // reset for next cycle
+    wakes_accum = 0;
+    first_run = false;
+    // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+    if (is_connected == 0)
+    {
+      join(&huart2);
+    }
+
+    // Get I2C Data
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+    HAL_Delay(1000); // sensor power-up and stabilization
+    scan_i2c_bus();
+    int i2c_success = sensor_init_and_read();
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+
+    // Format data and send
+    uint8_t payload[5] = {0};
+    if (i2c_success == 0)
+    {
+      HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_SET);
+      HAL_Delay(300);
+      int aproxBatteryTemp_c = ((calculated_temp_1 - 55) / 10);
+      uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
+      HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
+      lorawan_set_battery_level(&huart2, battery);
+
+      payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+      payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+      payload[2] = calculated_hum_1;
+      LoRaWAN_SendHex(payload, 3, 1);
+      // dbg_print_line("TX:done");
+    }
+    else
+    {
+    	// We FAILED to get a good reading for whatever reason
+    	// We need to specify why soon...
+
+    	// 1,2,3 all are sensor failures and will not contain data
+    	if (i2c_success == 1 || i2c_success == 2 || i2c_success == 3)
+    	{
+			uint8_t code = (uint8_t)i2c_success;
+			LoRaWAN_SendHex(&code, 1, 10);
+
+    	}
+    	// if i2c_success is 4, then the sensors returned data, but do not agree on the correct temp
+    	if (i2c_success == 4)
+    	{
+    		//add the dis-agreed sensor info to payload
+
+    		payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+    		payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+    		payload[2] = calculated_hum_1;
+
+    		payload[3] = (uint8_t)(calculated_temp_2 >> 8);
+		    payload[4] = (uint8_t)(calculated_temp_2 & 0xFF);
+		    payload[5] = calculated_hum_2;
+    		LoRaWAN_SendHex(payload, 6, 11); // send both dis-agreed values and an error
+    	}
+
+    }
+  }
+  // Always go back to deep sleep to allow next RTC wake
+  EnterDeepSleepMode();
   }
   /* USER CODE END 3 */
 }
@@ -663,7 +579,7 @@ static void MX_ADC_Init(void)
   hadc.Init.OversamplingMode = DISABLE;
   hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
   hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  hadc.Init.SamplingTime = ADC_SAMPLETIME_160CYCLES_5;
   hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
   hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc.Init.ContinuousConvMode = DISABLE;
@@ -903,9 +819,14 @@ static void MX_GPIO_Init(void)
 
 void configWakeupTime()
 {
-	HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_SET);
-	uint32_t wakeup_timer_value = 32 * 2048 - 1;  // 32 seconds
-	HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
+  // Optional visual indicator that we (re)armed the wake-up
+  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u;  // 32 seconds default
+  // Deactivate previous timer before re-arming (HAL recommendation when changing value)
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 /**
   * @brief  Wakeup Timer callback.
@@ -990,17 +911,20 @@ void RestoreGPIOAfterWakeup(void)
   */
 void EnterDeepSleepMode(void)
 {
+  /* Properly deinitialize UARTs before sleep */
+  HAL_UART_DeInit(&huart1);
+//  HAL_UART_DeInit(&huart2);
+  HAL_I2C_DeInit(&hi2c1);
+  
   /* Configure all GPIOs for ultra-low power */
   ConfigureGPIOForLowPower();
   
   /* Disable unnecessary peripheral clocks */
   __HAL_RCC_I2C1_CLK_DISABLE();
   __HAL_RCC_USART1_CLK_DISABLE();
-  // Keep UART2 clock enabled for LoRaWAN communication
-  // __HAL_RCC_USART2_CLK_DISABLE();
-//  __HAL_RCC_GPIOA_CLK_DISABLE();
+  __HAL_RCC_USART2_CLK_DISABLE();
   __HAL_RCC_GPIOB_CLK_DISABLE();
-  __HAL_RCC_GPIOC_CLK_DISABLE();
+//  __HAL_RCC_GPIOC_CLK_DISABLE(); // DO NOT DISABLE GPIO C, That is what the Crystal is connected to!!!
   __HAL_RCC_GPIOD_CLK_DISABLE();
   __HAL_RCC_GPIOH_CLK_DISABLE();
   
@@ -1025,14 +949,14 @@ void EnterDeepSleepMode(void)
   
   /* Re-enable peripheral clocks */
   __HAL_RCC_I2C1_CLK_ENABLE();
-//  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_USART1_CLK_ENABLE();
   __HAL_RCC_USART2_CLK_ENABLE();
   
   /* Restore GPIO configuration for normal operation */
-//  RestoreGPIOAfterWakeup();
+  MX_GPIO_Init();
   
   /* Re-initialize I2C and UARTs */
   MX_I2C1_Init();
