@@ -1,29 +1,71 @@
-test-results
-node_modules
+# Folders
+Debug/
+Release/
+bin/
+tmp/
 
-# Output
-.output
-.vercel
-.netlify
-.wrangler
-/.svelte-kit
-/build
+# IDE
+.settings/
+*.prefs
+*mkproject
 
-# OS
-.DS_Store
-Thumbs.db
+.metadata
+# Prerequisites
+*.d
+*.list
 
-# AI
-DOCS/*
-# Env
-.env
-.env.*
-!.env.example
-!.env.test
+# Object files
+*.o
+*.ko
+*.mk
+*.obj
+*.elf
 
-# Vite
-vite.config.js.timestamp-*
-vite.config.ts.timestamp-*
+# Linker output
+*.ilk
+*.list
+*.map
+*.exp
 
-# Paraglide
-src/lib/paraglide
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.cyclo
+*.idb
+*.pdb
+*.bak
+*.tmp
+*.swp
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
