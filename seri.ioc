@@ -177,4 +177,4 @@ VP_SYS_VS_Systick.Signal=SYS_VS_Systick
 VP_SYS_V_PVD_IN.Mode=Mode_PVD_Int
 VP_SYS_V_PVD_IN.Signal=SYS_V_PVD_IN
 board=custom
-isbadioc=true
+isbadioc=false
