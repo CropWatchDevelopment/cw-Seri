@@ -53,9 +53,6 @@ typedef struct uart_job_s {
 
 } UartJob_t;
 
-extern UART_HandleTypeDef huart1;
-extern UART_HandleTypeDef huart2;
-
 /**
   * @brief  Send data over the UART dedicated for debugging and communication with a serial UART terminal.
   * @param  tx_data_p  (I) A pointer to storage of the data.
