@@ -304,7 +304,7 @@ void HAL_UART_MspInit(UART_HandleTypeDef* huart)
     HAL_NVIC_EnableIRQ(USART1_IRQn);
     /* USER CODE END USART1_MspInit 1 */
   }
-  else if (USART2 == huart->Instance)
+  else if(huart->Instance==USART2)
   {
     /* USER CODE BEGIN USART2_MspInit 0 */
 

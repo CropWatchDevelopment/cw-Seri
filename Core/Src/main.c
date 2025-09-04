@@ -129,17 +129,17 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
     return (rxbuf[1] == '0') ? 0 : 1;
 }
 
-int LoRaWAN_Join(UART_HandleTypeDef *huart)
+int LoRaWAN_Join(void)
 {
     char const* lorawan_tx_cmds[] = { LORAWAN_CMD_ATTENTION_MNEMONIC, LORAWAN_CMD_JOIN_MNEMONIC };
     char join_rx_buffer[128] = {0};
     uint8_t job_index = 0u;
     UartJob_t* joinJob_p;
-    uint16_t expected_lengths[] = {4, 4};
+    uint16_t expected_lengths[] = {4, 4}; // "\nOK\r"
 
     while (job_index < 2) {
         static uint32_t errors = 0uL;
-        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], strlen(lorawan_tx_cmds[job_index]), (uint8_t*)join_rx_buffer, expected_lengths[job_index], &joinJob_p);
+        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], (uint16_t)strlen(lorawan_tx_cmds[job_index]), (uint8_t*)join_rx_buffer, expected_lengths[job_index], &joinJob_p);
         if (join_req_success) {
             static uint32_t cntr = 0uL;
 
@@ -159,6 +159,7 @@ int LoRaWAN_Join(UART_HandleTypeDef *huart)
             reason = joinJob_p->status;
         }
     }
+    return 0;
 #if 0
     char result = find_char_after(rxbuf, "JOIN: [");
     char error14 = find_char_after(rxbuf, "\nERROR 1");
@@ -379,7 +380,7 @@ int main(void)
         {
             first_run = false;
             // Perform LoRaWAN operations
-            LoRaWAN_Join(&huart2);
+            LoRaWAN_Join();
             HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
             HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
             scan_i2c_bus();
@@ -668,7 +669,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 38400;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
