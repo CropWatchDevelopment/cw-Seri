@@ -8,6 +8,8 @@ tmp/
 .settings/
 *.prefs
 *mkproject
+.mxproject
+*[Dd]ebug.launch
 
 .metadata
 # Prerequisites
