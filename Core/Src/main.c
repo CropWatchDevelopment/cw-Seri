@@ -135,10 +135,11 @@ int LoRaWAN_Join(UART_HandleTypeDef *huart)
     char join_rx_buffer[128] = {0};
     uint8_t job_index = 0u;
     UartJob_t* joinJob_p;
+    uint16_t expected_lengths[] = {4, 4};
 
     while (job_index < 2) {
         static uint32_t errors = 0uL;
-        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], strlen(lorawan_tx_cmds[job_index]), (uint8_t*)join_rx_buffer, (sizeof(join_rx_buffer) -1), &joinJob_p);
+        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], strlen(lorawan_tx_cmds[job_index]), (uint8_t*)join_rx_buffer, expected_lengths[job_index], &joinJob_p);
         if (join_req_success) {
             static uint32_t cntr = 0uL;
 

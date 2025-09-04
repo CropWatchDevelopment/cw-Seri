@@ -251,9 +251,9 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
   */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 {
-  /* Prevent unused argument(s) compilation warning */
-  UNUSED(huart);
-  UNUSED(Size);
+    /* Prevent unused argument(s) compilation warning */
+    UNUSED(huart);
+    UNUSED(Size);
 }
 
 /**
@@ -270,6 +270,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         if (uart_index < ERROR_UART) {
             uart_jobs[uart_index].status = (HAL_UART_STATE_READY == huart->RxState) ? UART_JOB_COMPLETE : UART_JOB_RX_FAILED;
             uart_jobs[uart_index].any_errors = (HAL_UART_STATE_ERROR == huart->RxState);
+        }
+        else {
+            uart_jobs[uart_index].status = UART_JOB_RX_FAILED;
+            uart_jobs[uart_index].any_errors = true;
         }
     }
 }
