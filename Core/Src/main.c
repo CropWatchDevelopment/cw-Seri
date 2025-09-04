@@ -134,12 +134,12 @@ int LoRaWAN_Join(void)
     char const* lorawan_tx_cmds[] = { LORAWAN_CMD_ATTENTION_MNEMONIC, LORAWAN_CMD_JOIN_MNEMONIC };
     char join_rx_buffer[128] = {0};
     uint8_t job_index = 0u;
-    UartJob_t* joinJob_p;
+    volatile UartJob_t* joinJob_p;
     uint16_t expected_lengths[] = {4, 4}; // "\nOK\r"
 
     while (job_index < 2) {
         static uint32_t errors = 0uL;
-        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], (uint16_t)strlen(lorawan_tx_cmds[job_index]), (uint8_t*)join_rx_buffer, expected_lengths[job_index], &joinJob_p);
+        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], (uint16_t)strlen(lorawan_tx_cmds[job_index]), ((uint8_t*)join_rx_buffer) + (job_index * expected_lengths[job_index]), expected_lengths[job_index], &joinJob_p);
         if (join_req_success) {
             static uint32_t cntr = 0uL;
 
@@ -148,12 +148,14 @@ int LoRaWAN_Join(void)
                 job_status = joinJob_p->status;
                 ++cntr;
             }
-            if (!joinJob_p->any_errors) {
+#warning:"Remove me after debug"
+            if (joinJob_p->any_errors) {
                 errors++;
             } else if (joinJob_p->status == UART_JOB_COMPLETE) {
                 job_index++;
             }
         }
+#warning:"Remove me after debug"
         else {
             static UartJobStatus_t reason = 0;
             reason = joinJob_p->status;
