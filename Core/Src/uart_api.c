@@ -102,7 +102,7 @@ bool LORA_Uart_Transmit(uint8_t const * const tx_data_p, uint16_t tx_length, Uar
     if (NULL != status_p) {
         *status_p = &uart_jobs[LORAWAN_UART];
     }
-    bool startedOk = Uart_StartTransmission(LORAWAN_UART, &huart2, tx_data_p, tx_length);
+    bool startedOk = Uart_StartTransmission(LORAWAN_UART, LORAWAN_UART_HANDLE, tx_data_p, tx_length);
     return startedOk;
 }
 
@@ -121,7 +121,7 @@ bool LORA_Uart_Receive(uint8_t* rx_data_p, uint16_t rx_length, UartJob_t** statu
     if (NULL != status_p) {
         *status_p = &uart_jobs[LORAWAN_UART];
     }
-    bool rx_started = Uart_StartReceiving(LORAWAN_UART, &huart2, rx_data_p, rx_length);
+    bool rx_started = Uart_StartReceiving(LORAWAN_UART, LORAWAN_UART_HANDLE, rx_data_p, rx_length);
     return rx_started;
 }
 
@@ -239,6 +239,7 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
             last_path = 6u;
         }
     }
+    return;
 }
 
 /**
@@ -420,7 +421,7 @@ static bool Uart_StartReceiving(UartId_t uart_id, UART_HandleTypeDef *const huar
         uart_jobs[uart_id].status = UART_JOB_RX_IN_PROGRESS;
     }
 
-    bool uart_rx_started = (DEBUG_UART == uart_id) ? Uart_Receiver(DBG_UART_HANDLE, data_p, expected_length) : (LORAWAN_UART == uart_id) ? Uart_Receiver(LORAWAN_UART_HANDLE, data_p, expected_length) : false;
+    bool uart_rx_started = (DEBUG_UART == uart_id) ? Uart_Receiver(huart, data_p, expected_length) : (LORAWAN_UART == uart_id) ? Uart_Receiver(huart, data_p, expected_length) : false;
 
     // When debugging with breakpoints, in most cases the UART Tx ISR will be called due to an empty tx buffer before we even get here.
    if (!uart_rx_started) {
