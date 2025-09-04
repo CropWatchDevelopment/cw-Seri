@@ -100,14 +100,14 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define ADC_IN0_Pin             GPIO_PIN_0
-#define ADC_IN0_GPIO_Port       GPIOA
-#define DBG_LED_Pin             GPIO_PIN_5
-#define DBG_LED_GPIO_Port       GPIOA
-#define VBAT_MEAS_EN_Pin        GPIO_PIN_0
-#define VBAT_MEAS_EN_GPIO_Port  GPIOB
-#define I2C_ENABLE_Pin          GPIO_PIN_5
-#define I2C_ENABLE_GPIO_Port    GPIOB
+#define ADC_IN0_Pin GPIO_PIN_0
+#define ADC_IN0_GPIO_Port GPIOA
+#define DBG_LED_Pin GPIO_PIN_5
+#define DBG_LED_GPIO_Port GPIOA
+#define VBAT_MEAS_EN_Pin GPIO_PIN_0
+#define VBAT_MEAS_EN_GPIO_Port GPIOB
+#define I2C_ENABLE_Pin GPIO_PIN_5
+#define I2C_ENABLE_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
