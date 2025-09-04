@@ -333,6 +333,13 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300);
+  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300);
+
+//  HAL_UART_Transmit(&huart2, "ATS 302=38400\r\n", 15, 300);
+//  HAL_UART_Transmit(&huart2, "AT&W\r\n", 6, 300); // SAVE ALL!
+//  HAL_UART_Transmit(&huart2, "ATZ\r\n", 5, 300); // Soft reboot!
+
 #if defined (LORAWAN_CHIP_REQURIED_PROVISIONING)
   HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
 
@@ -494,7 +501,7 @@ static void MX_ADC_Init(void)
   hadc.Init.OversamplingMode = DISABLE;
   hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
   hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  hadc.Init.SamplingTime = ADC_SAMPLETIME_160CYCLES_5;
   hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
   hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc.Init.ContinuousConvMode = DISABLE;
