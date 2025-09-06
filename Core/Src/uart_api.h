@@ -5,8 +5,16 @@
 extern "C" {
 #endif
 
+/* Includes ------------------------------------------------------------------*/
+
 #include "stm32l0xx_hal.h"
 #include <stdbool.h>
+
+/* Public defines ------------------------------------------------------------*/
+
+/* Public macros -------------------------------------------------------------*/
+
+/* Public types --------------------------------------------------------------*/
 
 typedef enum uart_ids_e {
     DEBUG_UART = 0,
@@ -52,6 +60,12 @@ typedef struct uart_job_s {
              uint16_t        rx_length_to_expect;
 
 } UartJob_t;
+
+/* External variables --------------------------------------------------------*/
+
+/* Public variables ----------------------------------------------------------*/
+
+/* Public function prototypes ------------------------------------------------*/
 
 /**
   * @brief  Send data over the UART dedicated for debugging and communication with a serial UART terminal.

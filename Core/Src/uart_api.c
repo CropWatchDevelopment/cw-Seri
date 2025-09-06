@@ -1,10 +1,19 @@
-/******************************************************************************/
-/* --- #included files -------------------------------------------------------*/
+/**
+   This file holds definitions and functions describing the behaviour of the RM126x LoRaWAN chip.
+*/
 
+/* Includes ------------------------------------------------------------------*/
+
+/******************************************************************************/
 #include "uart_api.h"
 #include <stdbool.h>
 
-/* --- Local MACROs ----------------------------------------------------------*/
+/* Private define ------------------------------------------------------------*/
+
+/* Private macro -------------------------------------------------------------*/
+
+#define DBG_UART_HANDLE                 (&huart1)
+#define LORAWAN_UART_HANDLE             (&huart2)
 
 #define SET_JOB_TX_IN_PROGRESS(uart)    uart_jobs[(uart)].status = UART_JOB_TX_IN_PROGRESS
 #define SET_JOB_RX_IN_PROGRESS(uart)    uart_jobs[(uart)].status = UART_JOB_RX_IN_PROGRESS
@@ -22,27 +31,32 @@ static uint32_t uart_tx_job_id = 0uL;
 static uint32_t Allocate_Uart_Tx_Job_Id(void);
 #endif
 
-/* --- Local (private) functionality ----------------------------------------*/
+/* Private typedef -----------------------------------------------------------*/
 
-static UartJob_t uart_jobs[SUPPORTED_UARTS] = {
-    [DEBUG_UART] =   { .uart_id = DEBUG_UART,   .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL},
-    [LORAWAN_UART] = { .uart_id = LORAWAN_UART, .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL}
-};
+/* External variables --------------------------------------------------------*/
+
+extern UART_HandleTypeDef               huart1;
+extern UART_HandleTypeDef               huart2;
+
+/* Private function prototypes -----------------------------------------------*/
 
 static bool Uart_Transmitter(UART_HandleTypeDef *const huart, uint8_t const * const data_p, uint16_t length);
 static bool Uart_Receiver(UART_HandleTypeDef *const huart, uint8_t* data_p, uint16_t expected_length);
 static bool Uart_StartTransmission(UartId_t uart_id, UART_HandleTypeDef *const huart, uint8_t const * const data_p, uint16_t length);
 static bool Uart_StartReceiving(UartId_t uart_id, UART_HandleTypeDef *const huart, uint8_t* data_p, uint16_t expected_length);
 
-extern UART_HandleTypeDef     huart1;
-extern UART_HandleTypeDef     huart2;
+/* Private variables ---------------------------------------------------------*/
 
-#define DBG_UART_HANDLE     (&huart1)
-#define LORAWAN_UART_HANDLE (&huart2)
+static UartJob_t uart_jobs[SUPPORTED_UARTS] = {
+    [DEBUG_UART] =   { .uart_id = DEBUG_UART,   .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL},
+    [LORAWAN_UART] = { .uart_id = LORAWAN_UART, .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL}
+};
 
-/******************************************************************************/
-/* --- API -------------------------------------------------------------------*/
-/******************************************************************************/
+/* Public variables ----------------------------------------------------------*/
+
+/* Public (though not necessarily API) functions -----------------------------*/
+
+/* API functions -------------------------------------------------------------*/
 
 /**
   * @brief  Send data over the UART dedicated for debugging and communication with a serial UART terminal.
@@ -314,6 +328,7 @@ void HAL_UART_AbortCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
+/* Private function implementations ------------------------------------------*/
 
 #if defined (USE_UART_JOB_ID_ALLOCATION)
 /**
