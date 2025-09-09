@@ -41,6 +41,8 @@
 #define SLEEP_TIME_MINUTES 10  // Sleep time in minutes between LoRaWAN transmissions
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
+
+#define DEV_EUI  "0004A30B001C0531"
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -136,41 +138,6 @@ char find_char_after(const char *str, const char *keyword) {
 }
 
 
-
-
-
-
-
-
-//int lorawan_is_config_required(UART_HandleTypeDef *huart)
-//{
-//	  HAL_UART_Transmit(huart, (uint8_t*)"AT\r\n", 4, 300);
-//	uint8_t rxwakebuf[16] = {0};
-//	  HAL_UART_Receive(huart, rxwakebuf, 6, 200);
-//	  uint8_t rxbuf[16] = {0};
-//	  // Totally Flush buffer and stuff
-//	  HAL_UART_AbortReceive(huart);
-//	  __HAL_UART_FLUSH_DRREGISTER(huart);
-//	  __HAL_UART_CLEAR_IDLEFLAG(huart);
-//	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-//
-//	  HAL_UART_Transmit(&huart2, (uint8_t*)"AT%S 502=?\r\n", 12, 300);
-//	  HAL_UART_Receive(huart, rxbuf, 16, 200);
-//
-//	  if (rxbuf[1] == '0')
-//	  {
-//		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-//		  return 0;
-//	  }
-//	  else
-//	  {
-//		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-//		  return 1;
-//	  }
-//}
-
-
-
 int lorawan_is_connected(UART_HandleTypeDef *huart)
 {
 	  HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
@@ -228,16 +195,15 @@ int join(UART_HandleTypeDef *huart)
 	if (result == 'O' || error14 == '4')
 	{
 		is_connected = 1;
-    dbg_print_line("JOIN:success");
-    return 1;
-		__NOP(); // success
+		return 1;
 	}
-	else
+
+	if (result == 'F')
 	{
+		HAL_UART_Transmit(&huart2, (uint8_t*)"AT+DROP\r\n", 9, 300);
+		HAL_Delay(200);
 		is_connected = 0;
-    dbg_print_line("JOIN:fail");
-    return 0;
-		__NOP(); // fail
+		return 0;
 	}
 }
 
@@ -270,30 +236,6 @@ int SendData(UART_HandleTypeDef *huart, char* data)
 //	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
 	  return 1;
-}
-
-int lorawan_chip_temp(UART_HandleTypeDef *huart)
-{
-	  uint8_t rxbuf[256] = {0};
-	  // Totally Flush buffer and stuff
-	  HAL_UART_AbortReceive(huart);
-	  __HAL_UART_FLUSH_DRREGISTER(huart);
-	  __HAL_UART_CLEAR_IDLEFLAG(huart);
-	  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-
-	  HAL_UART_Transmit(huart, (uint8_t*)"AT+TEMP\r\n", 9, 300);
-	  HAL_UART_Receive(huart, rxbuf, 7, 100);
-
-	  if (rxbuf[1] == '0')
-	  {
-		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-		  return 0;
-	  }
-	  else
-	  {
-		  memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-		  return 1;
-	  }
 }
 
 int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
@@ -425,26 +367,34 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
-//  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
+  HAL_UART_Transmit(&huart2, "AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
+  HAL_Delay(350);
 
   // Set LoRaWAN Settings
-//  HAL_UART_Transmit(&huart2, "ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
-//  HAL_UART_Transmit(&huart2, "ATS 603=0\r\n", 11, 300); // Set CLASS to A
-//  HAL_UART_Transmit(&huart2, "ATS 604=0\r\n", 11, 300); // Conformed 0 = NO, 1 = yes
-//  HAL_UART_Transmit(&huart2, "ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
-//  HAL_UART_Transmit(&huart2, "ATS 302=9600\r\n", 14, 300);
-
-  // Set Dev EUI, App Key, and JOIN KEY
-//  HAL_UART_Transmit(&huart2, "AT%S 500=\"0025CA00000055F70025CA00000055F7\"\r\n", 45, 300); // APP KEY
-//  HAL_UART_Transmit(&huart2, "AT%S 501=\"0025CA00000055F7\"\r\n", 29, 300); // DEV EUI
-//  HAL_UART_Transmit(&huart2, "AT%S 502=\"0000000000000000\"\r\n", 29, 300); // JOIN EUI
-//
-//  HAL_UART_Transmit(&huart2, "ATS 213=2000\r\n", 14, 300); // Set CLASS to A
-//  HAL_UART_Transmit(&huart2, "AT&W\r\n", 6, 300); // SAVE ALL!
-//  HAL_UART_Transmit(&huart2, "ATZ\r\n", 5, 300); // Soft reboot!
-
-//  HAL_UART_Transmit(&huart2, "AT+JOIN\r\n", 9, 300); // Test join the network
-//  __NOP();
+  HAL_UART_Transmit(&huart2, "ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
+   HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATS 603=0\r\n", 11, 300); // Set CLASS to A
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATS 604=0\r\n", 11, 300); // Conformed 0 = NO, 1 = yes
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATS 302=9600\r\n", 14, 300);
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "AT%S 500=\"0025CA000000235D0025CA00000055F7\"\r\n", 45, 300); // APP KEY
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "AT%S 501=\"0025CA000000235D\"\r\n", 29, 300); // DEV EUI
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "AT%S 502=\"0025CA00000055F7\"\r\n", 29, 300); // JOIN EUI
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATS 213=2000\r\n", 14, 300); // Set CLASS to A
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "AT&W\r\n", 6, 300); // SAVE ALL!
+  HAL_Delay(350);
+  HAL_UART_Transmit(&huart2, "ATZ\r\n", 5, 300); // Soft reboot!
+  HAL_Delay(500);
+  HAL_UART_Transmit(&huart2, "AT+JOIN\r\n", 9, 300); // Test join the network
+  __NOP();
 //
 //  while (1)
 //  {
