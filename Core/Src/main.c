@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI  "0004A30B001C0531"
+#define DEV_EUI  "0025CA000000235D"
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
