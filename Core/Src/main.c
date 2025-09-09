@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "uart_api.h"
-#include "lorawan_cmd.h"
+#include "rm126x_uart.h"
 #include "sensirion/sensirion.h"
 #include "battery/battery.h"
 #include <stdbool.h>
@@ -129,63 +129,13 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
     return (rxbuf[1] == '0') ? 0 : 1;
 }
 
-int LoRaWAN_Join(void)
-{
-    char const* lorawan_tx_cmds[] = { LORAWAN_CMD_ATTENTION_MNEMONIC, LORAWAN_CMD_JOIN_MNEMONIC };
-    char join_rx_buffer[128] = {0};
-    uint8_t job_index = 0u;
-    volatile UartJob_t* joinJob_p;
-    uint16_t expected_lengths[] = {4, 4}; // "\nOK\r"
-
-    while (job_index < 2) {
-        static uint32_t errors = 0uL;
-        bool join_req_success = LORA_Uart_Expect_Response_For_Tx((uint8_t const * const)lorawan_tx_cmds[job_index], (uint16_t)strlen(lorawan_tx_cmds[job_index]), ((uint8_t*)join_rx_buffer) + (job_index * expected_lengths[job_index]), expected_lengths[job_index], &joinJob_p);
-        if (join_req_success) {
-            static uint32_t cntr = 0uL;
-
-            while ((!joinJob_p->any_errors) && (joinJob_p->status != UART_JOB_COMPLETE)) {
-                static UartJobStatus_t job_status = UART_JOB_UNKNOWN_STATUS;
-                job_status = joinJob_p->status;
-                ++cntr;
-            }
-#warning:"Remove me after debug"
-            if (joinJob_p->any_errors) {
-                errors++;
-            } else if (joinJob_p->status == UART_JOB_COMPLETE) {
-                job_index++;
-            }
-        }
-#warning:"Remove me after debug"
-        else {
-            static UartJobStatus_t reason = 0;
-            reason = joinJob_p->status;
-        }
-    }
-    return 0;
-#if 0
-    char result = find_char_after(rxbuf, "JOIN: [");
-    char error14 = find_char_after(rxbuf, "\nERROR 1");
-    if (result == 'O' || error14 == '4')
-    {
-        return 1;
-        __NOP(); // success
-    }
-    else
-    {
-        return 0;
-        __NOP(); // fail
-    }
-#endif
-}
-
-
 int SendData(UART_HandleTypeDef *huart, char* data)
 {
     HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
     HAL_Delay(300);
     uint16_t total_rcv = 0;
     int16_t total_expected = 200;
-    uint8_t rxbuf[256] = {0};
+    uint8_t rxbuf[16] = {0};
     int data_size = strlen(data);
     HAL_UART_Transmit(&huart2, (uint8_t*)data, data_size, 300);
 //    HAL_UART_Receive(&huart2, rxbuf, 4, 100); // Get the OK back from the sync data send
@@ -246,9 +196,6 @@ int lorawan_chip_temp(UART_HandleTypeDef *huart)
 
     return (rxbuf[1] == '0') ? 0 : 1;
 }
-
-
-
 
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length)
 {
@@ -380,22 +327,43 @@ int main(void)
 
         if (first_run)
         {
+            bool abort_timeout = false;
+
             first_run = false;
             // Perform LoRaWAN operations
-            LoRaWAN_Join();
-            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-            HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
-            scan_i2c_bus();
-            bool i2c_success = sensor_init_and_read();
-            if (i2c_success)
-            {
-                uint8_t payload[5];
-                payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
-                payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
-                payload[2] = calculated_hum;
-                LoRaWAN_SendHex(payload, 3);
-            }
+            //* @return  0 upon reception of the expected response, 1 transmission failure, 2 detected error(s),
+            //* @return  3 indicating characters are still missing, 4 device is busy / not ready, 5 device didn't get the request.
+            if (0 == LoRaWAN_Join()) {
+                HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+                int server_reply = -1;
+                do {
+                    static uint32_t server_timeout = 0x00F0C915;
+                    //* @return  0 if server reply is available, 1 if still not available, 2 when timeout occurs, 3 for any failure, 4 if unknown.
+                    server_reply = LoRaWAN_Collect_Server_Reply(server_timeout);
+                    if (2 == server_reply) {
+                        // This means timeout - the server failed to reply in the given timeframe.
+                        abort_timeout = true;
+                    }
+                    else if (3 == server_reply) {
+                        abort_timeout = true;
+                    }
+                    else if (4 == server_reply) {
+                        abort_timeout = true;
+                    }
+                } while ((!abort_timeout) && (server_reply > 0));
 
+                HAL_Delay(1000); // Increased delay for sensor power-up and stabilization
+                scan_i2c_bus();
+                bool i2c_success = sensor_init_and_read();
+                if (i2c_success)
+                {
+                    uint8_t payload[5];
+                    payload[0] = (uint8_t)(calculated_temp >> 8);     // high byte
+                    payload[1] = (uint8_t)(calculated_temp & 0xFF);   // low byte
+                    payload[2] = calculated_hum;
+                    LoRaWAN_SendHex(payload, 3);
+                }
+            }
         }
 //        configWakeupTime();
         EnterDeepSleepMode();

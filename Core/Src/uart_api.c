@@ -48,8 +48,8 @@ static bool Uart_StartReceiving(UartId_t uart_id, UART_HandleTypeDef *const huar
 /* Private variables ---------------------------------------------------------*/
 
 static UartJob_t uart_jobs[SUPPORTED_UARTS] = {
-    [DEBUG_UART] =   { .uart_id = DEBUG_UART,   .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL},
-    [LORAWAN_UART] = { .uart_id = LORAWAN_UART, .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL}
+    [DEBUG_UART] =   { .uart_id = DEBUG_UART,   .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL, .rx_data_callback = NULL},
+    [LORAWAN_UART] = { .uart_id = LORAWAN_UART, .status = UART_JOB_INIT, .store_rx_data_p = NULL, .rx_length_to_expect = 0uL, .rx_data_callback = NULL}
 };
 
 /* Public variables ----------------------------------------------------------*/
@@ -67,7 +67,7 @@ static UartJob_t uart_jobs[SUPPORTED_UARTS] = {
   * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool DBG_Uart_Transmit(uint8_t const * const tx_data_p, uint16_t tx_length, UartJob_t** status_p)
+bool DBG_Uart_Transmit(uint8_t const * const tx_data_p, size_t tx_length, UartJob_t** status_p)
 {
 #if defined (USE_UART_JOB_ID_ALLOCATION)
     CLEAR_JOB_ID(DEBUG_UART);
@@ -83,14 +83,16 @@ bool DBG_Uart_Transmit(uint8_t const * const tx_data_p, uint16_t tx_length, Uart
   * @brief  Expect incoming data over the UART dedicated for debugging and communication with a serial UART terminal.
   * @param  rx_data_p  (I) A pointer to storage of the expected data.
   * @param  rx_length  (I) Minimum number of data bytes expected.
+  * @param  rx_cb      (I) A callback function (pointer) to register.
   * @param  status_p   (O) A pointer to the UART Job which handles this transaction.
   *
   * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool DBG_Uart_Receive(uint8_t *const data_p, uint16_t expected_len, UartJob_t** status_p)
+bool DBG_Uart_Receive(uint8_t *const data_p, size_t expected_len, DataRxFromServer_Cb_t rx_cb, UartJob_t** status_p)
 {
     uart_jobs[DEBUG_UART].type = UART_JOB_RX_ONLY;
+    uart_jobs[DEBUG_UART].rx_data_callback = rx_cb;
     if (NULL != status_p) {
         *status_p = &uart_jobs[DEBUG_UART];
     }
@@ -107,7 +109,7 @@ bool DBG_Uart_Receive(uint8_t *const data_p, uint16_t expected_len, UartJob_t** 
   * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool LORA_Uart_Transmit(uint8_t const * const tx_data_p, uint16_t tx_length, UartJob_t** status_p)
+bool LORA_Uart_Transmit(uint8_t const * const tx_data_p, size_t tx_length, UartJob_t** status_p)
 {
 #if defined (USE_UART_JOB_ID_ALLOCATION)
     CLEAR_JOB_ID(LORAWAN_UART);
@@ -124,14 +126,19 @@ bool LORA_Uart_Transmit(uint8_t const * const tx_data_p, uint16_t tx_length, Uar
   * @brief  Expect incoming data over the UART dedicated for LORA communication.
   * @param  rx_data_p  (I) A pointer to storage of the expected data.
   * @param  rx_length  (I) Minimum number of data bytes expected.
+  * @param  rx_cb      (I) A callback function (pointer) to register.
   * @param  status_p   (O) A pointer to the UART Job which handles this transaction.
   *
-  * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
+  * @retval false - on any failure, with the reason being available via the status_p.
+  * @retval true - when setting-up the receiver had no issues.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool LORA_Uart_Receive(uint8_t* rx_data_p, uint16_t rx_length, UartJob_t** status_p)
+bool LORA_Uart_Receive(uint8_t* rx_data_p, size_t rx_length, DataRxFromServer_Cb_t rx_cb, UartJob_t** status_p)
 {
     uart_jobs[LORAWAN_UART].type = UART_JOB_RX_ONLY;
+    uart_jobs[LORAWAN_UART].store_rx_data_p = rx_data_p;
+    uart_jobs[LORAWAN_UART].rx_length_to_expect = rx_length;
+    uart_jobs[LORAWAN_UART].rx_data_callback = rx_cb;
     if (NULL != status_p) {
         *status_p = &uart_jobs[LORAWAN_UART];
     }
@@ -150,7 +157,7 @@ bool LORA_Uart_Receive(uint8_t* rx_data_p, uint16_t rx_length, UartJob_t** statu
   * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool DBG_Uart_Expect_Response_For_Tx(uint8_t const * const tx_data_p, uint16_t tx_length, uint8_t* rx_data_p, uint16_t rx_length, UartJob_t** status_p)
+bool DBG_Uart_Expect_Response_For_Tx(uint8_t const * const tx_data_p, size_t tx_length, uint8_t* rx_data_p, size_t rx_length, UartJob_t** status_p)
 {
 #if defined (USE_UART_JOB_ID_ALLOCATION)
     ALLOCATE_JOB_ID(DEBUG_UART);
@@ -176,7 +183,7 @@ bool DBG_Uart_Expect_Response_For_Tx(uint8_t const * const tx_data_p, uint16_t t
   * @retval false - on any failure, with the reason being available via the status_p, true otherwise.
   * @note   The completion of reception is indicated via the output parameter 'status_p'.
   */
-bool LORA_Uart_Expect_Response_For_Tx(uint8_t const * const tx_data_p, uint16_t tx_length, uint8_t* rx_data_p, uint16_t rx_length, UartJob_t** status_p)
+bool LORA_Uart_Expect_Response_For_Tx(uint8_t const * const tx_data_p, size_t tx_length, uint8_t* rx_data_p, size_t rx_length, UartJob_t** status_p)
 {
 #if defined (USE_UART_JOB_ID_ALLOCATION)
     ALLOCATE_JOB_ID(LORAWAN_UART);
@@ -217,40 +224,32 @@ uint32_t GetLatestAllocatedUartTxJobId(void)
   */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
-    static uint16_t last_path = 0u;
-
     if (NULL != huart) {
         uint8_t uart_index = (huart->Instance == huart1.Instance) ? DEBUG_UART : (huart->Instance == huart2.Instance) ? LORAWAN_UART : ERROR_UART;
         if (uart_index < ERROR_UART) {
             if ((UART_JOB_TX_RX == uart_jobs[uart_index].type)) {
                 if ((NULL != uart_jobs[uart_index].store_rx_data_p) && (uart_jobs[uart_index].rx_length_to_expect > 0uL)) {
-                    uart_jobs[uart_index].status == UART_JOB_RX_IN_PROGRESS;
+                    uart_jobs[uart_index].status = UART_JOB_RX_IN_PROGRESS;
 
                     bool rx_started = Uart_Receiver(huart, uart_jobs[uart_index].store_rx_data_p, uart_jobs[uart_index].rx_length_to_expect);
-                    last_path = 1u;
                     if (!rx_started) {
                         uart_jobs[uart_index].status = UART_JOB_RX_FAILED;
-                        last_path = 2u;
                     }
                 }
                 else {
                     uart_jobs[uart_index].status = UART_JOB_RX_FAILED;
-                    last_path = 3u;
                 }
             }
             else if (UART_JOB_TX_ONLY == uart_jobs[uart_index].type) {
                 uart_jobs[uart_index].status = UART_JOB_COMPLETE;
-                last_path = 4u;
             }
             else {
                 uart_jobs[uart_index].status = UART_JOB_RX_ABORTED;
-                last_path = 5u;
             }
         }
         else {
             uart_jobs[uart_index].status = UART_JOB_RX_FAILED;
             uart_jobs[uart_index].any_errors = true;
-            last_path = 6u;
         }
     }
     return;
@@ -285,6 +284,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
         if (uart_index < ERROR_UART) {
             uart_jobs[uart_index].status = (HAL_UART_STATE_READY == huart->RxState) ? UART_JOB_COMPLETE : UART_JOB_RX_FAILED;
             uart_jobs[uart_index].any_errors = (HAL_UART_STATE_ERROR == huart->RxState);
+            if (NULL != uart_jobs[uart_index].rx_data_callback) {
+                if (true == uart_jobs[uart_index].rx_data_callback(uart_jobs[uart_index].status)) {
+                    uart_jobs[uart_index].rx_data_callback = NULL;
+                }
+            }
         }
         else {
             uart_jobs[uart_index].status = UART_JOB_RX_FAILED;
@@ -424,7 +428,7 @@ static bool Uart_StartTransmission(UartId_t uart_id, UART_HandleTypeDef *const h
   * @param  uart_id    (I) Internal identifier of a UART.
   * @param  huart      (I) UART handle.
   * @param  data_p     (I) A pointer to storage of the data expected.
-  * @param  length     (I) Minumum number of data bytes expected.
+  * @param  length     (I) Minimum number of data bytes expected.
   * @param  status_p   (O) A pointer to the UART Job which handles this transaction.
   *
   * @retval false - on any failure, with the reason being recorded internally, true otherwise.
@@ -441,6 +445,7 @@ static bool Uart_StartReceiving(UartId_t uart_id, UART_HandleTypeDef *const huar
     // When debugging with breakpoints, in most cases the UART Tx ISR will be called due to an empty tx buffer before we even get here.
    if (!uart_rx_started) {
        uart_jobs[uart_id].status = UART_JOB_RX_FAILED;
+       uart_jobs[uart_id].any_errors = true;
    }
 
     return uart_rx_started;
