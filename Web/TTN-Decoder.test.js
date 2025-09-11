@@ -48,9 +48,9 @@ function encT2(tempC) {
 }
 
 function encH(hPercent) {
-  // Your decoder divides by 10.0, so 0..255 -> 0.0..25.5%
-  const b = Math.max(0, Math.min(255, Math.round(hPercent * 10)));
-  return b;
+  // Now 2 bytes: 0..10000 -> 0.0..100.0%
+  const raw = Math.max(0, Math.min(10000, Math.round(hPercent * 100)));
+  return [(raw >> 8) & 0xff, raw & 0xff];
 }
 
 // ---------- Tests ----------
@@ -59,7 +59,7 @@ describe('decodeUplink fPort=1 temperature sweep (-110..110°C)', () => {
     for (let t = -110; t <= 110; t++) {
       const [b0, b1] = encT1(t);
       const h = encH(5.0); // 5.0%
-      const res = decodeUplink({ fPort: 1, bytes: [b0, b1, h] });
+      const res = decodeUplink({ fPort: 1, bytes: [b0, b1, h[0], h[1]] });
 
       expect(res.errors).toEqual([]);
       expect(res.data).toHaveProperty('temperature_c');
@@ -74,15 +74,15 @@ describe('decodeUplink fPort=1 temperature sweep (-110..110°C)', () => {
   });
 });
 
-describe('decodeUplink fPort=1 humidity sweep (0..25.5% due to 1-byte /10 encoding)', () => {
-  test('no >100% humidity warnings possible with current format', () => {
+describe('decodeUplink fPort=1 humidity sweep (0..100% with 2-byte encoding)', () => {
+  test('sweeps humidity and validates decoding + warnings', () => {
     const tOK = encT1(20);
-    for (let hb = 0; hb <= 255; hb++) {
-      const res = decodeUplink({ fPort: 1, bytes: [tOK[0], tOK[1], hb] });
-      const hDec = hb / 10.0;
-      expect(res.data.humidity).toBeCloseTo(hDec, 4);
+    for (let h = 0; h <= 100; h += 5) {  // Test every 5% to keep it reasonable
+      const hBytes = encH(h);
+      const res = decodeUplink({ fPort: 1, bytes: [tOK[0], tOK[1], hBytes[0], hBytes[1]] });
+      expect(res.data.humidity).toBeCloseTo(h, 2);
       const hasWarn = res.warnings.some((w) => /Humidity > 100%/.test(w));
-      expect(hasWarn).toBe(false);
+      expect(hasWarn).toBe(h > 100);  // Should warn if over 100%
     }
   });
 });
@@ -118,7 +118,7 @@ describe('decodeUplink fPort=11 disagree packet', () => {
     const h1 = encH(12.3);
     const h2 = encH(0.4);
 
-    const res = decodeUplink({ fPort: 11, bytes: [t1[0], t1[1], h1, t2[0], t2[1], h2] });
+    const res = decodeUplink({ fPort: 11, bytes: [t1[0], t1[1], h1[0], h1[1], t2[0], t2[1], h2[0], h2[1]] });
 
     expect(res.data.error).toBe('sensor validation failed');
     expect(res.data.temperature1_c).toBeCloseTo(10.5, 2);
@@ -129,7 +129,7 @@ describe('decodeUplink fPort=11 disagree packet', () => {
 
     const t1Bad = encT1(-45);
     const t2Bad = encT2(90);
-    const res2 = decodeUplink({ fPort: 11, bytes: [t1Bad[0], t1Bad[1], h1, t2Bad[0], t2Bad[1], h2] });
+    const res2 = decodeUplink({ fPort: 11, bytes: [t1Bad[0], t1Bad[1], h1[0], h1[1], t2Bad[0], t2Bad[1], h2[0], h2[1]] });
     expect(res2.warnings).toEqual(
       expect.arrayContaining([
         expect.stringMatching(/Sensor1 temperature out of range/),
@@ -140,7 +140,7 @@ describe('decodeUplink fPort=11 disagree packet', () => {
 
   test('payload too short error', () => {
     const res = decodeUplink({ fPort: 11, bytes: [0x00] });
-    expect(res.errors[0]).toMatch(/Payload too short on fPort 11/);
+    expect(res.errors[0]).toMatch(/Payload too short on fPort 11 - expected 8 bytes/);
   });
 });
 
@@ -148,14 +148,14 @@ describe('decodeUplink default-path parity with fPort≠1/10/11', () => {
   test('same math as fPort 1', () => {
     const [b0, b1] = encT1(23.4);
     const hb = encH(2.5);
-    const p1 = decodeUplink({ fPort: 1, bytes: [b0, b1, hb] });
-    const def = decodeUplink({ fPort: 99, bytes: [b0, b1, hb] });
+    const p1 = decodeUplink({ fPort: 1, bytes: [b0, b1, hb[0], hb[1]] });
+    const def = decodeUplink({ fPort: 99, bytes: [b0, b1, hb[0], hb[1]] });
     expect(def.data.temperature_c).toBeCloseTo(p1.data.temperature_c, 4);
     expect(def.data.humidity).toBeCloseTo(p1.data.humidity, 4);
   });
 
   test('default-path short payload error', () => {
-    const res = decodeUplink({ fPort: 99, bytes: [0x00, 0x00] });
-    expect(res.errors[0]).toMatch(/expected at least 3 bytes/);
+    const res = decodeUplink({ fPort: 99, bytes: [0x00, 0x00, 0x00] });
+    expect(res.errors[0]).toMatch(/expected at least 4 bytes/);
   });
 });

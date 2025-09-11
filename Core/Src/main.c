@@ -466,7 +466,7 @@ int main(void)
       HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
       // Format data and send
-      uint8_t payload[5] = {0};
+      uint8_t payload[6] = {0};
       if (i2c_success == 0)
       {
         HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_SET);
@@ -478,8 +478,9 @@ int main(void)
 
         payload[0] = (uint8_t)(calculated_temp_1 >> 8);
         payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-        payload[2] = calculated_hum_1;
-        LoRaWAN_SendHex(payload, 3, 1);
+        payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+        payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
+        LoRaWAN_SendHex(payload, 4, 1);
         // dbg_print_line("TX:done");
       }
       else
