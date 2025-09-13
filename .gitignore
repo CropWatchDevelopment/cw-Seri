@@ -8,6 +8,9 @@ tmp/
 .settings/
 *.prefs
 *mkproject
+*.su
+*.cyclo
+
 
 .metadata
 # Prerequisites
