@@ -1,16 +1,13 @@
 # Folders
-Debug/
-Release/
-bin/
-tmp/
+Debug/*
+Release/*
+bin/*
+tmp/*
 
 # IDE
 .settings/
 *.prefs
 *mkproject
-*.su
-*.cyclo
-
 
 .metadata
 # Prerequisites
