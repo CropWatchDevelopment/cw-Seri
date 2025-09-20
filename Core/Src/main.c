@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA00000056E4"
+#define DEV_EUI "0025CA0000002694"
 #define JOIN_EUI "0025CA00000055F7"
 /* USER CODE END PD */
 
@@ -293,6 +293,7 @@ int join(UART_HandleTypeDef *huart)
     is_connected = 0;
     return 0;
   }
+  return 0;
 }
 
 int SendData(UART_HandleTypeDef *huart, char *data)
