@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA0000002694"
+#define DEV_EUI "0025CA0000000500"
 #define JOIN_EUI "0025CA00000055F7"
 /* USER CODE END PD */
 
@@ -444,18 +444,20 @@ int main(void)
   int need_provision = uart2_probe_and_align();
   if (need_provision == 1) {
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 	  // Set LoRaWAN Settings
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 603=0\r\n", 11, 300); // Set CLASS to A
-	  HAL_Delay(350);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=0\r\n", 11, 300); // Conformed 0 = NO, 1 = yes
-	  HAL_Delay(350);
+	  HAL_Delay(400);
+	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=1\r\n", 11, 300); // Confirmed 0 = NO, 1 = yes
+	  HAL_Delay(400);
+	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 605=3\r\n", 11, 300); // Retry if Confirm Fails, 3 Retries set (and is default)
+	  HAL_Delay(400);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 302=9600\r\n", 14, 300);
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 
 	  // Dynamically concatenate DEV_EUI and JOIN_EUI to form APP_KEY
 	  char app_key[33]; // 16 (DEV_EUI) + 16 (JOIN_EUI) + 1 (null terminator)
@@ -465,26 +467,26 @@ int main(void)
 	  char cmd_app[128]; // Buffer for full command
 	  sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 
 	  // Dynamically build and send DEV EUI command
 	  char cmd_dev[64];
 	  sprintf(cmd_dev, "AT%%S 501=\"%s\"\r\n", DEV_EUI);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, strlen(cmd_dev), 300);
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 
 	  // Dynamically build and send JOIN EUI command
 	  char cmd_join[64];
 	  sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14, 300); // Set Sleep Mode to 2 seconds
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
-	  HAL_Delay(350);
+	  HAL_Delay(400);
 	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
-	  HAL_Delay(500);
+	  HAL_Delay(400);
 	  UART2_SetBaud(9600);
   }
 

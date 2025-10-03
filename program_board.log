@@ -1744,3 +1744,130 @@ Thu Sep 18 08:53:55 PM JST 2025: Restored original main.c for next board.
 2025-09-20 16:40:36 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-20.csv
 2025-09-20 16:40:36 | Left DEV_EUI at latest value; backup refreshed.
 2025-09-20 17:59:34 | Exiting.
+2025-09-23 16:11:41 | Starting board programming…
+2025-09-23 16:11:41 | Backup created: /home/kevin/source/STM32CubeIDE/cw-Seri/Core/Src/main.c.bak
+2025-09-23 16:11:41 | JOIN_EUI (from main.c or default): 0025CA00000055F7
+2025-09-23 16:11:41 | Created CSV: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-23.csv (with header)
+2025-09-23 16:12:42 | DEV_EUI (scanned): 0025CA00000056F2
+2025-09-23 16:12:42 | DEV_EUI in main.c before: 0025CA0000002694
+2025-09-23 16:12:42 | DEV_EUI in main.c after:  0025CA00000056F2
+2025-09-23 16:12:42 | Updated DEV_EUI in source to: 0025CA00000056F2
+2025-09-23 16:12:42 | Building (make)…
+2025-09-23 16:12:42 | Build OK.
+2025-09-23 16:12:42 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-23 16:12:42 | Flashing MCU…
+2025-09-23 16:12:43 | Flashing failed.
+2025-09-23 16:12:52 | DEV_EUI (scanned): 0025CA00000056F2
+2025-09-23 16:12:52 | DEV_EUI in main.c before: 0025CA0000002694
+2025-09-23 16:12:52 | DEV_EUI in main.c after:  0025CA00000056F2
+2025-09-23 16:12:52 | Updated DEV_EUI in source to: 0025CA00000056F2
+2025-09-23 16:12:52 | Building (make)…
+2025-09-23 16:12:53 | Build OK.
+2025-09-23 16:12:53 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-23 16:12:53 | Flashing MCU…
+2025-09-23 16:12:56 | Flashed successfully with DEV_EUI=0025CA00000056F2
+2025-09-23 16:12:56 | Appended to CSV: DEV_EUI=0025CA00000056F2, JOIN_EUI=0025CA00000055F7
+2025-09-23 16:12:56 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-23.csv
+2025-09-23 16:12:56 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-23 17:09:12 | Exiting.
+2025-09-27 15:48:04 | Starting board programming…
+2025-09-27 15:48:04 | Backup created: /home/kevin/source/STM32CubeIDE/cw-Seri/Core/Src/main.c.bak
+2025-09-27 15:48:04 | JOIN_EUI (from main.c or default): 0025CA00000055F7
+2025-09-27 15:48:04 | Created CSV: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv (with header)
+2025-09-27 15:48:34 | DEV_EUI (scanned): 0025CA000000568D
+2025-09-27 15:48:34 | DEV_EUI in main.c before: 0025CA00000056F2
+2025-09-27 15:48:34 | DEV_EUI in main.c after:  0025CA000000568D
+2025-09-27 15:48:34 | Updated DEV_EUI in source to: 0025CA000000568D
+2025-09-27 15:48:34 | Building (make)…
+2025-09-27 15:48:34 | Build OK.
+2025-09-27 15:48:34 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:48:34 | Flashing MCU…
+2025-09-27 15:48:34 | Flashing failed.
+2025-09-27 15:48:43 | DEV_EUI (scanned): 0025CA000000568D
+2025-09-27 15:48:43 | DEV_EUI in main.c before: 0025CA00000056F2
+2025-09-27 15:48:43 | DEV_EUI in main.c after:  0025CA000000568D
+2025-09-27 15:48:43 | Updated DEV_EUI in source to: 0025CA000000568D
+2025-09-27 15:48:43 | Building (make)…
+2025-09-27 15:48:44 | Build OK.
+2025-09-27 15:48:44 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:48:44 | Flashing MCU…
+2025-09-27 15:48:47 | Flashed successfully with DEV_EUI=0025CA000000568D
+2025-09-27 15:48:47 | Appended to CSV: DEV_EUI=0025CA000000568D, JOIN_EUI=0025CA00000055F7
+2025-09-27 15:48:47 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv
+2025-09-27 15:48:47 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-27 15:53:06 | DEV_EUI (scanned): 0025CA000000568D
+2025-09-27 15:53:06 | DEV_EUI in main.c before: 0025CA000000568D
+2025-09-27 15:53:06 | DEV_EUI in main.c after:  0025CA000000568D
+2025-09-27 15:53:06 | Updated DEV_EUI in source to: 0025CA000000568D
+2025-09-27 15:53:06 | Building (make)…
+2025-09-27 15:53:06 | Build OK.
+2025-09-27 15:53:06 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:53:06 | Flashing MCU…
+2025-09-27 15:53:06 | Flashing failed.
+2025-09-27 15:53:13 | DEV_EUI (scanned): 0025CA000000568D
+2025-09-27 15:53:13 | DEV_EUI in main.c before: 0025CA000000568D
+2025-09-27 15:53:13 | DEV_EUI in main.c after:  0025CA000000568D
+2025-09-27 15:53:13 | Updated DEV_EUI in source to: 0025CA000000568D
+2025-09-27 15:53:13 | Building (make)…
+2025-09-27 15:53:13 | Build OK.
+2025-09-27 15:53:13 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:53:13 | Flashing MCU…
+2025-09-27 15:53:16 | Flashed successfully with DEV_EUI=0025CA000000568D
+2025-09-27 15:53:16 | Appended to CSV: DEV_EUI=0025CA000000568D, JOIN_EUI=0025CA00000055F7
+2025-09-27 15:53:16 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv
+2025-09-27 15:53:16 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-27 15:54:31 | DEV_EUI (scanned): 0025CA000000568D
+2025-09-27 15:54:31 | DEV_EUI in main.c before: 0025CA000000568D
+2025-09-27 15:54:31 | DEV_EUI in main.c after:  0025CA000000568D
+2025-09-27 15:54:31 | Updated DEV_EUI in source to: 0025CA000000568D
+2025-09-27 15:54:31 | Building (make)…
+2025-09-27 15:54:31 | Build OK.
+2025-09-27 15:54:31 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:54:31 | Flashing MCU…
+2025-09-27 15:54:34 | Flashed successfully with DEV_EUI=0025CA000000568D
+2025-09-27 15:54:34 | Appended to CSV: DEV_EUI=0025CA000000568D, JOIN_EUI=0025CA00000055F7
+2025-09-27 15:54:34 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv
+2025-09-27 15:54:34 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-27 15:57:29 | DEV_EUI (scanned): 0025CA0000000F2D
+2025-09-27 15:57:29 | DEV_EUI in main.c before: 0025CA000000568D
+2025-09-27 15:57:29 | DEV_EUI in main.c after:  0025CA0000000F2D
+2025-09-27 15:57:29 | Updated DEV_EUI in source to: 0025CA0000000F2D
+2025-09-27 15:57:29 | Building (make)…
+2025-09-27 15:57:29 | Build OK.
+2025-09-27 15:57:29 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:57:29 | Flashing MCU…
+2025-09-27 15:57:32 | Flashed successfully with DEV_EUI=0025CA0000000F2D
+2025-09-27 15:57:32 | Appended to CSV: DEV_EUI=0025CA0000000F2D, JOIN_EUI=0025CA00000055F7
+2025-09-27 15:57:32 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv
+2025-09-27 15:57:32 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-27 15:58:27 | DEV_EUI (scanned): 0025CA0000000F2D
+2025-09-27 15:58:27 | DEV_EUI in main.c before: 0025CA0000000F2D
+2025-09-27 15:58:27 | DEV_EUI in main.c after:  0025CA0000000F2D
+2025-09-27 15:58:27 | Updated DEV_EUI in source to: 0025CA0000000F2D
+2025-09-27 15:58:27 | Building (make)…
+2025-09-27 15:58:28 | Build OK.
+2025-09-27 15:58:28 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:58:28 | Flashing MCU…
+2025-09-27 15:58:28 | Flashing failed.
+2025-09-27 15:58:36 | DEV_EUI (scanned): 0025CA0000000F2D
+2025-09-27 15:58:36 | DEV_EUI in main.c before: 0025CA0000000F2D
+2025-09-27 15:58:36 | DEV_EUI in main.c after:  0025CA0000000F2D
+2025-09-27 15:58:36 | Updated DEV_EUI in source to: 0025CA0000000F2D
+2025-09-27 15:58:36 | Building (make)…
+2025-09-27 15:58:36 | Build OK.
+2025-09-27 15:58:36 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 15:58:36 | Flashing MCU…
+2025-09-27 15:58:40 | Flashed successfully with DEV_EUI=0025CA0000000F2D
+2025-09-27 15:58:40 | Appended to CSV: DEV_EUI=0025CA0000000F2D, JOIN_EUI=0025CA00000055F7
+2025-09-27 15:58:40 | CSV updated: /home/kevin/source/STM32CubeIDE/cw-Seri/DeviceCsvImport-2025-09-27.csv
+2025-09-27 15:58:40 | Left DEV_EUI at latest value; backup refreshed.
+2025-09-27 16:00:43 | DEV_EUI (scanned): 0025CA0000000F2D
+2025-09-27 16:00:43 | DEV_EUI in main.c before: 0025CA0000000F2D
+2025-09-27 16:00:43 | DEV_EUI in main.c after:  0025CA0000000F2D
+2025-09-27 16:00:43 | Updated DEV_EUI in source to: 0025CA0000000F2D
+2025-09-27 16:00:43 | Building (make)…
+2025-09-27 16:00:43 | Build OK.
+2025-09-27 16:00:43 | Using ELF: /home/kevin/source/STM32CubeIDE/cw-Seri/Debug/seri.elf
+2025-09-27 16:00:43 | Flashing MCU…
+2025-09-27 16:00:43 | Flashing failed.
+2025-09-28 02:27:36 | Exiting.
