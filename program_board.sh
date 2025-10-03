@@ -7,9 +7,8 @@ WORKSPACE_DIR="/home/kevin/source/STM32CubeIDE/cw-Seri"
 PROJECT_NAME="cw-Seri"
 BUILD_CONFIG="Debug"
 
-MAIN_C_FILE="$WORKSPACE_DIR/Core/Src/main.c"
-MAIN_H_FILE="$WORKSPACE_DIR/Core/Inc/main.h"
-BACKUP_FILE="$MAIN_C_FILE.bak"
+CONFIG_C_FILE="$WORKSPACE_DIR/Core/Src/lorawan_config.c"
+BACKUP_FILE="$CONFIG_C_FILE.bak"
 LOG_FILE="$WORKSPACE_DIR/program_board.log"
 
 # Tools
@@ -29,7 +28,7 @@ TTI_FREQ_PLAN_ID="AS_920_923_LBT"
 TTI_LORAWAN_VER="MAC_V1_0_4"
 TTI_LORAWAN_PHY="RP002_V1_0_3"
 
-# If we can't parse JOIN_EUI from main.c, fall back to this:
+# If we can't parse JOIN_EUI from config, fall back to this:
 JOIN_EUI_DEFAULT="0025CA00000055F7"
 
 # Output CSV (daily file)
@@ -50,23 +49,9 @@ validate_dev_eui() {
   fi
 }
 
-# --- WHERE IS DEV_EUI DEFINED? (main.c preferred, then main.h) ---
-find_dev_define_file() {
-  local pat='^[[:space:]]*#define[[:space:]]+DEV_EUI[[:space:]]+"'
-  if [[ -f "$MAIN_C_FILE" ]] && grep -qE "$pat" "$MAIN_C_FILE"; then
-    echo -n "$MAIN_C_FILE"; return 0
-  fi
-  if [[ -f "$MAIN_H_FILE" ]] && grep -qE "$pat" "$MAIN_H_FILE"; then
-    echo -n "$MAIN_H_FILE"; return 0
-  fi
-  # Default to main.c if neither matched (we'll attempt to patch it)
-  echo -n "$MAIN_C_FILE"; return 1
-}
-
-# Extract JOIN_EUI from main.c (#define JOIN_EUI "hex...")
-extract_join_eui_from_main() {
+extract_join_eui_from_config() {
   local v
-  v="$(grep -E '^[[:space:]]*#define[[:space:]]+JOIN_EUI[[:space:]]+"[0-9A-Fa-f]+"' "$MAIN_C_FILE" \
+  v="$(grep -E 'g_lorawan_join_eui\[]\s*=\s*"[0-9A-Fa-f]+"' "$CONFIG_C_FILE" \
        | sed -E 's/.*"([0-9A-Fa-f]+)".*/\1/' | tr 'a-f' 'A-F' || true)"
   if [[ ${#v} -eq 16 && "$v" =~ ^[0-9A-F]{16}$ ]]; then
     echo -n "$v"
@@ -75,10 +60,8 @@ extract_join_eui_from_main() {
   fi
 }
 
-# Extract DEV_EUI from an arbitrary file (for verification/logging)
-extract_dev_eui_from_file() {
-  local f="$1"
-  grep -E '^[[:space:]]*#define[[:space:]]+DEV_EUI[[:space:]]+"[0-9A-Fa-f]+"' "$f" \
+extract_dev_eui_from_config() {
+  grep -E 'g_lorawan_dev_eui\[]\s*=\s*"[0-9A-Fa-f]+"' "$CONFIG_C_FILE" \
     | sed -E 's/.*"([0-9A-Fa-f]+)".*/\1/' \
     | tr 'a-f' 'A-F' \
     | head -n1
@@ -87,54 +70,36 @@ extract_dev_eui_from_file() {
 ensure_paths() {
   [[ -d "$WORKSPACE_DIR" ]] || die "Workspace not found: $WORKSPACE_DIR"
   [[ -x "$STM32_PROGRAMMER" ]] || die "STM32_Programmer_CLI not found at $STM32_PROGRAMMER"
+  [[ -f "$CONFIG_C_FILE" ]] || die "Config file not found: $CONFIG_C_FILE"
   if [[ "$BUILD_MODE" == "cubeide" ]]; then
     [[ -x "$STM32CUBEIDE" ]] || die "CubeIDE headless builder not found at $STM32CUBEIDE"
   fi
-  # We tolerate missing DEV_EUI line initially (first run may insert/patch)
 }
 
-# Robust patch: replace value inside quotes after #define DEV_EUI
 patch_dev_eui() {
   local eui="$1"
-  local target
-  target="$(find_dev_define_file)"
-
-  [[ -f "$target" ]] || die "Target file for DEV_EUI not found: $target"
 
   local before
-  before="$(extract_dev_eui_from_file "$target" || true)"
-  log "DEV_EUI in $(basename "$target") before: ${before:-<none>}"
+  before="$(extract_dev_eui_from_config || true)"
+  log "DEV_EUI in $(basename "$CONFIG_C_FILE") before: ${before:-<none>}"
 
-  # Work on a temp copy; do NOT rely on -i portability
   local tmp tmp2
-  tmp="$(mktemp)"; tmp2="$(mktemp)"
-  cp "$target" "$tmp"
+  tmp="$(mktemp)"
+  tmp2="$(mktemp)"
+  cp "$CONFIG_C_FILE" "$tmp"
 
-  # Replace whatever is inside the quotes after DEV_EUI with our new value.
-  # Pattern tolerates arbitrary spacing and comments after the string.
-  if ! sed -E 's@(^[[:space:]]*#define[[:space:]]+DEV_EUI[[:space:]]*")[^"]+(".*$)@\1'"$eui"'\2@' "$tmp" > "$tmp2"; then
-    rm -f "$tmp" "$tmp2"; return 1
+  if ! sed -E "s@(g_lorawan_dev_eui\\[]\\s*=\\s*")[^"]+(\".*)@\\1${eui}\\2@" "$tmp" > "$tmp2"; then
+    log "Failed to update DEV_EUI in lorawan_config.c"
+    rm -f "$tmp" "$tmp2"
+    return 1
   fi
 
-  # If there was no match (define missing), add one near the top just after includes.
-  if ! grep -qE '^[[:space:]]*#define[[:space:]]+DEV_EUI[[:space:]]+"' "$tmp2"; then
-    if grep -n '^#include' "$tmp2" >/dev/null; then
-      local ln
-      ln="$(grep -n '^#include' "$tmp2" | head -n1 | cut -d: -f1)"
-      awk -v n="$ln" -v val="$eui" 'NR==n{print; print "#define DEV_EUI \"" val "\""; next}1' "$tmp2" > "$tmp"
-    else
-      printf '#define DEV_EUI "%s"\n' "$eui" | cat - "$tmp2" > "$tmp"
-    fi
-    mv -f "$tmp" "$tmp2"
-  fi
-
-  # Move into place
-  cp -f "$tmp2" "$target"
-  rm -f "$tmp" "$tmp2"
+  mv -f "$tmp2" "$CONFIG_C_FILE"
+  rm -f "$tmp"
 
   local after
-  after="$(extract_dev_eui_from_file "$target" || true)"
-  log "DEV_EUI in $(basename "$target") after:  ${after:-<none>}"
+  after="$(extract_dev_eui_from_config || true)"
+  log "DEV_EUI in $(basename "$CONFIG_C_FILE") after:  ${after:-<none>}"
 
   [[ "$after" == "$eui" ]]
 }
@@ -145,7 +110,6 @@ build_project() {
   if [[ "$BUILD_MODE" == "cubeide" ]]; then
     "$STM32CUBEIDE" -data "$WORKSPACE_DIR/.." -cleanBuild "${PROJECT_NAME}/${BUILD_CONFIG}" || return 1
   else
-    # Accept either 'makefile' or 'Makefile'
     local mf_lower="$WORKSPACE_DIR/$BUILD_CONFIG/makefile"
     local mf_upper="$WORKSPACE_DIR/$BUILD_CONFIG/Makefile"
     [[ -f "$mf_lower" || -f "$mf_upper" ]] || die "Makefile/makefile missing in $WORKSPACE_DIR/$BUILD_CONFIG (build once in IDE or switch BUILD_MODE)."
@@ -171,7 +135,6 @@ flash_board() {
   "$STM32_PROGRAMMER" "${connect[@]}" -w "$elf" -v -rst
 }
 
-# === CSV helpers ===
 csv_ensure_header() {
   if [[ ! -f "$CSV_FILE" ]]; then
     echo "dev_eui;join_eui;frequency_plan_id;lorawan_version;lorawan_phy_version;app_key" > "$CSV_FILE"
@@ -183,9 +146,9 @@ csv_has_dev_eui() {
   local dev_eui="$1"
   [[ -f "$CSV_FILE" ]] || return 1
   awk -F';' -v dev_eui="$dev_eui" '
-    NR==1 { next }                          # skip header
+    NR==1 { next }
     {
-      gsub(/^[ \t]+|[ \t]+$/, "", $1)       # trim
+      gsub(/^[ \t]+|[ \t]+$/, "", $1)
       if (toupper($1) == toupper(dev_eui)) exit 0
     }
     END { exit 1 }
@@ -202,20 +165,18 @@ csv_append_row() {
   log "Appended to CSV: DEV_EUI=${dev_eui}, JOIN_EUI=${join_eui}"
 }
 
-# Cleanup/rollback if we modified main.c and exit early (only on failures)
 restore_original=false
-trap 'if $restore_original; then cp -f "$BACKUP_FILE" "$MAIN_C_FILE" && log "Restored original main.c (trap)"; fi' EXIT
+trap 'if $restore_original; then cp -f "$BACKUP_FILE" "$CONFIG_C_FILE" && log "Restored original lorawan_config.c (trap)"; fi' EXIT
 
 # ===================== Main =====================
 ensure_paths
+csv_ensure_header
 log "Starting board programming…"
-cp -f "$MAIN_C_FILE" "$BACKUP_FILE"
+cp -f "$CONFIG_C_FILE" "$BACKUP_FILE"
 log "Backup created: $BACKUP_FILE"
 
-JOIN_EUI_CONST="$(extract_join_eui_from_main)"
-log "JOIN_EUI (from main.c or default): $JOIN_EUI_CONST"
-
-csv_ensure_header
+JOIN_EUI_CONST="$(extract_join_eui_from_config)"
+log "JOIN_EUI (from config or default): $JOIN_EUI_CONST"
 
 while true; do
   echo
@@ -234,53 +195,48 @@ while true; do
   fi
   log "DEV_EUI (scanned): $eui"
 
-  # Patch DEV_EUI (and verify)
   if ! patch_dev_eui "$eui"; then
-    log "Failed to update DEV_EUI in source."
+    log "Failed to update DEV_EUI in lorawan_config.c"
     continue
   fi
-  restore_original=true  # only restore on early failures
-  log "Updated DEV_EUI in source to: $eui"
+  restore_original=true
+  log "Updated DEV_EUI in lorawan_config.c to: $eui"
 
-  # Build
   if ! build_project; then
-    log "Build failed. Restoring original main.c"
-    cp -f "$BACKUP_FILE" "$MAIN_C_FILE"
+    log "Build failed. Restoring original lorawan_config.c"
+    cp -f "$BACKUP_FILE" "$CONFIG_C_FILE"
     restore_original=false
     continue
   fi
   log "Build OK."
 
-  # Find ELF
   elf="$(find_elf || true)"
   if [[ -z "${elf:-}" ]]; then
     log "Could not locate .elf in $WORKSPACE_DIR/$BUILD_CONFIG"
-    cp -f "$BACKUP_FILE" "$MAIN_C_FILE"; restore_original=false
+    cp -f "$BACKUP_FILE" "$CONFIG_C_FILE"
+    restore_original=false
     continue
   fi
   log "Using ELF: $elf"
 
-  # Flash
   log "Flashing MCU…"
   if flash_board "$elf"; then
     log "Flashed successfully with DEV_EUI=$eui"
 
-    # --- CSV output (after successful flash) ---
     join_eui="$JOIN_EUI_CONST"
     app_key="$(echo -n "${eui}${join_eui}" | tr 'a-f' 'A-F')"
     csv_append_row "$eui" "$join_eui" "$app_key"
     log "CSV updated: $CSV_FILE"
 
-    # Keep latest DEV_EUI in source; refresh backup to the latest
-    cp -f "$MAIN_C_FILE" "$BACKUP_FILE"
+    cp -f "$CONFIG_C_FILE" "$BACKUP_FILE"
     restore_original=false
     log "Left DEV_EUI at latest value; backup refreshed."
   else
     log "Flashing failed."
-    cp -f "$BACKUP_FILE" "$MAIN_C_FILE"; restore_original=false
+    cp -f "$BACKUP_FILE" "$CONFIG_C_FILE"
+    restore_original=false
     continue
   fi
 
-  # Ready for next board (source retains last DEV_EUI)
 done
 

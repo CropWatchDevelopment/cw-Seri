@@ -159,3 +159,49 @@ describe('decodeUplink default-path parity with fPort≠1/10/11', () => {
     expect(res.errors[0]).toMatch(/expected at least 4 bytes/);
   });
 });
+
+describe('firmware payload encoding contract', () => {
+  function firmwareEncodePrimary(tempC, humPercent) {
+    let tempRaw = Math.round(tempC * 100) + 5500;
+    if (tempRaw < 0) tempRaw = 65536 + tempRaw; // two's complement
+    const humRaw = Math.round(humPercent * 100);
+    return [
+      (tempRaw >> 8) & 0xff,
+      tempRaw & 0xff,
+      (humRaw >> 8) & 0xff,
+      humRaw & 0xff,
+    ];
+  }
+
+  function firmwareSendHex(bytes) {
+    const HEX = '0123456789ABCDEF';
+    let hex = '';
+    for (const b of bytes) {
+      hex += HEX[(b >> 4) & 0xf];
+      hex += HEX[b & 0xf];
+    }
+    return `AT+SEND "${hex}"\r\n`;
+  }
+
+  test('primary payload produces expected AT command and decodes correctly', () => {
+    const payload = firmwareEncodePrimary(24.56, 52.34);
+    const command = firmwareSendHex(payload);
+    const expected = `AT+SEND "${Buffer.from(payload).toString('hex').toUpperCase()}"\r\n`;
+    expect(command).toBe(expected);
+
+    const res = decodeUplink({ fPort: 1, bytes: payload });
+    expect(res.errors).toEqual([]);
+    expect(res.data.temperature_c).toBeCloseTo(24.56, 2);
+    expect(res.data.humidity).toBeCloseTo(52.34, 2);
+  });
+
+  test('error packet command matches encoding and decoder mapping', () => {
+    const code = 0x03;
+    const command = firmwareSendHex([code]);
+    const expected = `AT+SEND "${Buffer.from([code]).toString('hex').toUpperCase()}"\r\n`;
+    expect(command).toBe(expected);
+
+    const res = decodeUplink({ fPort: 10, bytes: [code] });
+    expect(res.data.error).toBe('sensor 2 failure');
+  });
+});

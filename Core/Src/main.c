@@ -23,12 +23,12 @@
 /* USER CODE BEGIN Includes */
 #include <stdbool.h>
 #include <string.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-
 #include "battery/vbat_lorawan.h"
 #include "sensirion/sensirion.h"
+#include "lorawan_config.h"
+#include "app_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,12 +38,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SLEEP_TIME_MINUTES 10 // Sleep time in minutes between LoRaWAN transmissions
-// Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
-#define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA0000000500"
-#define JOIN_EUI "0025CA00000055F7"
+// Sleep cadence configuration defined in app_config.h
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -70,7 +67,7 @@ static uint16_t wakes_accum = 0;             // main-loop accumulator
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
-    (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
+  (uint16_t)((APP_SLEEP_TIME_MINUTES * 60u + (APP_SLEEP_INTERVAL_SECONDS - 1u)) / APP_SLEEP_INTERVAL_SECONDS);
 
 //LoRaWAN UART Baud
 // Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
@@ -121,6 +118,34 @@ static void dbg_print_line(const char *s)
   dbg_print(s);
   dbg_print("\r\n");
 }
+
+typedef struct
+{
+  size_t length;
+  bool saw_ok;
+  bool saw_error;
+} lorawan_response_info_t;
+
+static bool buffer_contains(const uint8_t *buf, size_t len, const char *token);
+static int lorawan_exchange(const char *cmd,
+                            uint32_t timeout_ms,
+                            bool break_on_ok,
+                            uint8_t *buffer,
+                            size_t buffer_len,
+                            lorawan_response_info_t *out_info);
+static int lorawan_send_command_simple(const char *cmd, uint32_t timeout_ms);
+static int lorawan_send_command_expect(const char *cmd,
+                                       const char *token,
+                                       uint32_t timeout_ms,
+                                       uint8_t *buffer,
+                                       size_t buffer_len,
+                                       lorawan_response_info_t *out_info);
+static int lorawan_wait_for_token(uint32_t timeout_ms,
+                                  const char *success_token,
+                                  const char *failure_token,
+                                  uint8_t *buffer,
+                                  size_t buffer_len,
+                                  lorawan_response_info_t *out_info);
 static HAL_StatusTypeDef UART2_SetBaud(uint32_t br) {
   // Drain TX and stop RX before touching the peripheral
   while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TC) == RESET) { /* wait */ }
@@ -225,30 +250,355 @@ char find_char_after(const char *str, const char *keyword)
 
 int lorawan_is_connected(UART_HandleTypeDef *huart)
 {
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(300); // Let the OK come back
-  uint8_t rxwakebuf[16] = {0};
-  HAL_UART_Receive(huart, rxwakebuf, 4, 300);
-  uint8_t rxbuf[256] = {0};
-  // Totally Flush buffer and stuff
-  HAL_UART_AbortReceive(huart);
-  __HAL_UART_FLUSH_DRREGISTER(huart);
-  __HAL_UART_CLEAR_IDLEFLAG(huart);
-  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+  (void)huart;
 
-  HAL_UART_Transmit(huart, (uint8_t *)"ATI 3001\r\n", 10, 300);
-  HAL_UART_Receive(huart, rxbuf, 7, 100);
-
-  if (rxbuf[1] == '0')
+  if (lorawan_send_command_simple("AT\r\n", 500) != 0)
   {
-    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
     return 0;
   }
-  else
+
+  uint8_t response[128];
+  lorawan_response_info_t info = {0};
+  if (lorawan_send_command_expect("ATI 3001\r\n", "OK", 1000, response, sizeof(response), &info) != 0)
   {
-    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-    return 1;
+    return 0;
   }
+
+  for (size_t i = 0; i < info.length; ++i)
+  {
+    if (response[i] == '0')
+    {
+      return 0;
+    }
+    if (response[i] == '1')
+    {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+static bool buffer_contains(const uint8_t *buf, size_t len, const char *token)
+{
+  if (!buf || !token)
+  {
+    return false;
+  }
+
+  size_t token_len = strlen(token);
+  if (token_len == 0 || token_len > len)
+  {
+    return false;
+  }
+
+  for (size_t i = 0; i + token_len <= len; ++i)
+  {
+    if (memcmp(buf + i, token, token_len) == 0)
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+static int lorawan_exchange(const char *cmd,
+                            uint32_t timeout_ms,
+                            bool break_on_ok,
+                            uint8_t *buffer,
+                            size_t buffer_len,
+                            lorawan_response_info_t *out_info)
+{
+  if (!cmd || !buffer || buffer_len == 0u)
+  {
+    return -1;
+  }
+
+  size_t cmd_len = strlen(cmd);
+  if (cmd_len == 0u)
+  {
+    return -1;
+  }
+
+  uart2_rx_flush(&huart2);
+
+  if (HAL_UART_Transmit(&huart2, (uint8_t *)cmd, (uint16_t)cmd_len, 300) != HAL_OK)
+  {
+    return -2;
+  }
+
+  memset(buffer, 0, buffer_len);
+
+  size_t total = 0;
+  bool saw_ok = false;
+  bool saw_error = false;
+  uint32_t start = HAL_GetTick();
+
+  uint8_t chunk_buf[64];
+
+  while ((HAL_GetTick() - start) < timeout_ms)
+  {
+    uint32_t now = HAL_GetTick();
+    if (now - start >= timeout_ms)
+    {
+      break;
+    }
+
+    uint32_t remaining = timeout_ms - (now - start);
+    if (remaining > 250u)
+    {
+      remaining = 250u;
+    }
+
+    uint16_t chunk_len = 0;
+    HAL_StatusTypeDef rx = HAL_UARTEx_ReceiveToIdle(&huart2, chunk_buf, sizeof(chunk_buf), &chunk_len, remaining);
+
+    if (rx == HAL_OK && chunk_len > 0u)
+    {
+      size_t copy_len = chunk_len;
+      if (copy_len > buffer_len)
+      {
+        copy_len = buffer_len;
+      }
+
+      if ((total + copy_len) > buffer_len)
+      {
+        size_t overflow = total + copy_len - buffer_len;
+        if (overflow > total)
+        {
+          overflow = total;
+        }
+        if (overflow > 0u)
+        {
+          memmove(buffer, buffer + overflow, total - overflow);
+          total -= overflow;
+        }
+      }
+
+      size_t available = (buffer_len > total) ? (buffer_len - total) : 0u;
+      size_t to_copy = (copy_len > available) ? available : copy_len;
+      if (to_copy > 0u)
+      {
+        const uint8_t *src = chunk_buf + (chunk_len - to_copy);
+        memcpy(buffer + total, src, to_copy);
+        total += to_copy;
+      }
+
+      saw_ok |= buffer_contains(buffer, total, "OK");
+      saw_error |= buffer_contains(buffer, total, "ERROR");
+
+      if (saw_error)
+      {
+        break;
+      }
+
+      if (break_on_ok && saw_ok)
+      {
+        break;
+      }
+    }
+    else if (rx == HAL_TIMEOUT)
+    {
+      continue;
+    }
+    else if (rx != HAL_OK)
+    {
+      return -3;
+    }
+  }
+
+  if (total >= buffer_len)
+  {
+    total = buffer_len - 1u;
+  }
+  buffer[total] = '\0';
+
+  if (out_info)
+  {
+    out_info->length = total;
+    out_info->saw_ok = saw_ok;
+    out_info->saw_error = saw_error;
+  }
+
+  if (saw_error)
+  {
+    return -4;
+  }
+
+  if (break_on_ok && !saw_ok)
+  {
+    return -5;
+  }
+
+  if (!saw_ok && !saw_error && total == 0u)
+  {
+    return -6;
+  }
+
+  return 0;
+}
+
+static int lorawan_send_command_simple(const char *cmd, uint32_t timeout_ms)
+{
+  uint8_t response[128];
+  lorawan_response_info_t info = {0};
+  int rc = lorawan_exchange(cmd, timeout_ms, true, response, sizeof(response), &info);
+  if (rc != 0)
+  {
+    dbg_print_line("LoRaWAN:cmd_fail");
+  }
+  return rc;
+}
+
+static int lorawan_send_command_expect(const char *cmd,
+                                       const char *token,
+                                       uint32_t timeout_ms,
+                                       uint8_t *buffer,
+                                       size_t buffer_len,
+                                       lorawan_response_info_t *out_info)
+{
+  lorawan_response_info_t info = {0};
+  int rc = lorawan_exchange(cmd, timeout_ms, false, buffer, buffer_len, &info);
+  if (rc != 0)
+  {
+    return rc;
+  }
+
+  if (token && !buffer_contains(buffer, info.length, token))
+  {
+    return -7;
+  }
+
+  if (out_info)
+  {
+    *out_info = info;
+  }
+
+  return 0;
+}
+
+static int lorawan_wait_for_token(uint32_t timeout_ms,
+                                  const char *success_token,
+                                  const char *failure_token,
+                                  uint8_t *buffer,
+                                  size_t buffer_len,
+                                  lorawan_response_info_t *out_info)
+{
+  if (!buffer || buffer_len == 0u)
+  {
+    return -1;
+  }
+
+  memset(buffer, 0, buffer_len);
+
+  size_t total = 0;
+  bool saw_success = false;
+  bool saw_failure = false;
+  uint32_t start = HAL_GetTick();
+  uint8_t chunk_buf[64];
+
+  while ((HAL_GetTick() - start) < timeout_ms)
+  {
+    uint32_t now = HAL_GetTick();
+    if (now - start >= timeout_ms)
+    {
+      break;
+    }
+
+    uint32_t remaining = timeout_ms - (now - start);
+    if (remaining > 500u)
+    {
+      remaining = 500u;
+    }
+
+    uint16_t chunk_len = 0;
+    HAL_StatusTypeDef rx = HAL_UARTEx_ReceiveToIdle(&huart2, chunk_buf, sizeof(chunk_buf), &chunk_len, remaining);
+
+    if (rx == HAL_OK && chunk_len > 0u)
+    {
+      size_t copy_len = chunk_len;
+      if (copy_len > buffer_len)
+      {
+        copy_len = buffer_len;
+      }
+
+      if ((total + copy_len) > buffer_len)
+      {
+        size_t overflow = total + copy_len - buffer_len;
+        if (overflow > total)
+        {
+          overflow = total;
+        }
+        if (overflow > 0u)
+        {
+          memmove(buffer, buffer + overflow, total - overflow);
+          total -= overflow;
+        }
+      }
+
+      size_t available = (buffer_len > total) ? (buffer_len - total) : 0u;
+      size_t to_copy = (copy_len > available) ? available : copy_len;
+      if (to_copy > 0u)
+      {
+        const uint8_t *src = chunk_buf + (chunk_len - to_copy);
+        memcpy(buffer + total, src, to_copy);
+        total += to_copy;
+      }
+
+      if (success_token && buffer_contains(buffer, total, success_token))
+      {
+        saw_success = true;
+      }
+      if (failure_token && buffer_contains(buffer, total, failure_token))
+      {
+        saw_failure = true;
+      }
+
+      if (saw_failure)
+      {
+        break;
+      }
+
+      if (saw_success)
+      {
+        break;
+      }
+    }
+    else if (rx == HAL_TIMEOUT)
+    {
+      continue;
+    }
+    else if (rx != HAL_OK)
+    {
+      return -2;
+    }
+  }
+
+  if (total >= buffer_len)
+  {
+    total = buffer_len - 1u;
+  }
+  buffer[total] = '\0';
+
+  if (out_info)
+  {
+    out_info->length = total;
+    out_info->saw_ok = saw_success;
+    out_info->saw_error = saw_failure;
+  }
+
+  if (saw_failure)
+  {
+    return -3;
+  }
+
+  if (saw_success)
+  {
+    return 0;
+  }
+
+  return -4; // timeout without matching token
 }
 
 int join(UART_HandleTypeDef *huart)
@@ -259,53 +609,70 @@ int join(UART_HandleTypeDef *huart)
     return 1;
   }
   dbg_print_line("JOIN:start");
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(300); // let OK come back!
-  uint16_t total_rcv = 0;
-  int16_t total_expected = 11;
-  uint8_t rxbuf[256] = {0};
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT+JOIN\r\n", 9, 300);
-  HAL_UART_Receive(&huart2, rxbuf, 4, 100);
-  __HAL_UART_FLUSH_DRREGISTER(&huart2);
-  __HAL_UART_CLEAR_IDLEFLAG(&huart2);
 
-  while (total_expected > 0)
+  if (lorawan_send_command_simple("AT\r\n", 500) != 0)
   {
-    HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 35000);
-    total_expected -= total_rcv;
+    return 0;
   }
 
-  __HAL_UART_FLUSH_DRREGISTER(&huart2);
-  __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+  uint8_t rxbuf[256];
+  lorawan_response_info_t info = {0};
+  if (lorawan_send_command_expect("AT+JOIN\r\n", "OK", 1000, rxbuf, sizeof(rxbuf), &info) != 0)
+  {
+    return 0;
+  }
 
-  char result = find_char_after((const char *)rxbuf, "JOIN: [");
-  char error14 = find_char_after((const char *)rxbuf, "\nERROR 1");
-  if (result == 'O' || error14 == '4')
+  // Wait for asynchronous JOIN response
+  int wait_rc = lorawan_wait_for_token(35000u, "JOIN: [", "ERROR", rxbuf, sizeof(rxbuf), &info);
+  bool join_success = buffer_contains(rxbuf, info.length, "JOIN: [OK");
+  bool already_joined = buffer_contains(rxbuf, info.length, "ERROR 14");
+  bool join_failed = buffer_contains(rxbuf, info.length, "JOIN: [FAIL");
+
+  if (wait_rc == 0 && join_success)
   {
     is_connected = 1;
     return 1;
   }
 
-  if (result == 'F')
+  if (already_joined)
   {
-    HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
-    HAL_Delay(200);
+    is_connected = 1;
+    return 1;
+  }
+
+  if (join_failed || wait_rc == -3 || wait_rc == -4)
+  {
+    uint8_t dummy[64];
+    lorawan_response_info_t drop_info = {0};
+    lorawan_send_command_expect("AT+DROP\r\n", "OK", 500, dummy, sizeof(dummy), &drop_info);
     is_connected = 0;
     return 0;
   }
+
   return 0;
 }
 
 int SendData(UART_HandleTypeDef *huart, char *data)
 {
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(300);
-  //	uint16_t total_rcv = 0;
-  //	int16_t total_expected = 200;
-  //	uint8_t rxbuf[256] = {0};
-  int data_size = strlen(data);
-  HAL_UART_Transmit(&huart2, (uint8_t *)data, data_size, 300);
-  HAL_Delay(100);
+  (void)huart;
+
+  if (!data)
+  {
+    return 0;
+  }
+
+  if (lorawan_send_command_simple("AT\r\n", 500) != 0)
+  {
+    return 0;
+  }
+
+  uint8_t response[128];
+  lorawan_response_info_t info = {0};
+  if (lorawan_send_command_expect(data, "OK", 2000, response, sizeof(response), &info) != 0)
+  {
+    return 0;
+  }
+
   return 1;
 }
 
@@ -319,31 +686,31 @@ int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
     return -1; // encoding error or buffer too small
   }
 
-  // Flush / clear UART
-  HAL_UART_AbortReceive(huart);
-  __HAL_UART_FLUSH_DRREGISTER(huart);
-  __HAL_UART_CLEAR_IDLEFLAG(huart);
-  __HAL_UART_CLEAR_FLAG(huart,
-                        UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-
-  // Transmit command
-  if (HAL_UART_Transmit(huart, (uint8_t *)cmd, (uint16_t)len, 300) != HAL_OK)
+  uint8_t response[128];
+  lorawan_response_info_t info = {0};
+  int rc = lorawan_send_command_expect(cmd, "OK", 500, response, sizeof(response), &info);
+  if (rc != 0)
   {
-    return -2; // TX error
+    return -2;
   }
 
-  HAL_Delay(300);
   return 0; // success
 }
 
-static void LoRaWAN_set_fport(int fPort)
+static int LoRaWAN_set_fport(int fPort)
 {
   char cmd[20]; // plenty big for "ATS 629=255\r\n"
   int n = snprintf(cmd, sizeof(cmd), "ATS 629=%d\r\n", fPort);
   if (n > 0 && n < (int)sizeof(cmd))
   {
-    HAL_UART_Transmit(&huart2, (uint8_t *)cmd, (uint16_t)n, 300);
+    uint8_t response[64];
+    lorawan_response_info_t info = {0};
+    if (lorawan_send_command_expect(cmd, "OK", 500, response, sizeof(response), &info) == 0)
+    {
+      return 0;
+    }
   }
+  return -1;
 }
 
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
@@ -388,18 +755,23 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
     txbuf[idx++] = (uint8_t)suffix[i];
 
   // dbg_print_u32("SEND:len", (uint32_t)length);
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // WAKE MODULE!
-  HAL_Delay(400);                                          // Giving it enough ttime to wake up
+  if (lorawan_send_command_simple("AT\r\n", 500) != 0)
+  {
+    return;
+  }
 
-  // Set FPort from the function argument (dynamic)
-  LoRaWAN_set_fport(fPort);
-  HAL_Delay(300);
+  if (LoRaWAN_set_fport(fPort) != 0)
+  {
+    return;
+  }
 
-  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300); // SEND THE DATA!
+  lorawan_response_info_t info = {0};
+  if (lorawan_send_command_expect((const char *)txbuf, "OK", 5000u, txbuf, sizeof(txbuf), &info) != 0)
+  {
+    return;
+  }
 
-  // Return to fPort 1, probably not needed, but lets do it anyhow
-  LoRaWAN_set_fport(1);
-  // HAL_Delay(300); // Not sure if i need this
+  (void)LoRaWAN_set_fport(APP_FPORT_PRIMARY);
 }
 
 /* USER CODE END 0 */
@@ -442,52 +814,62 @@ int main(void)
 
 
   int need_provision = uart2_probe_and_align();
-  if (need_provision == 1) {
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
-	  HAL_Delay(400);
-	  // Set LoRaWAN Settings
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 603=0\r\n", 11, 300); // Set CLASS to A
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=1\r\n", 11, 300); // Confirmed 0 = NO, 1 = yes
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 605=3\r\n", 11, 300); // Retry if Confirm Fails, 3 Retries set (and is default)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 302=9600\r\n", 14, 300);
-	  HAL_Delay(400);
+  if (need_provision == 1)
+  {
+    if (lorawan_send_command_simple("AT\r\n", 500) == 0)
+    {
+      uint8_t response[128];
+      lorawan_response_info_t info = {0};
 
-	  // Dynamically concatenate DEV_EUI and JOIN_EUI to form APP_KEY
-	  char app_key[33]; // 16 (DEV_EUI) + 16 (JOIN_EUI) + 1 (null terminator)
-	  sprintf(app_key, "%s%s", DEV_EUI, JOIN_EUI);
+      size_t setup_cmd_count = lorawan_config_get_provisioning_command_count();
+      for (size_t i = 0; i < setup_cmd_count; ++i)
+      {
+        const char *cmd = lorawan_config_get_provisioning_command(i);
+        if (!cmd)
+        {
+          continue;
+        }
+        if (lorawan_send_command_expect(cmd, "OK", 1000, response, sizeof(response), &info) != 0)
+        {
+          dbg_print_line("Provision:cmd_failed");
+        }
+      }
 
-	  // Build and send APP KEY command
-	  char cmd_app[128]; // Buffer for full command
-	  sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
-	  HAL_Delay(400);
+      if (lorawan_send_command_expect("ATS 302=9600\r\n", "OK", 1000, response, sizeof(response), &info) == 0)
+      {
+        UART2_SetBaud(9600);
+      }
 
-	  // Dynamically build and send DEV EUI command
-	  char cmd_dev[64];
-	  sprintf(cmd_dev, "AT%%S 501=\"%s\"\r\n", DEV_EUI);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, strlen(cmd_dev), 300);
-	  HAL_Delay(400);
+      const lorawan_credentials_t *credentials = lorawan_config_get_credentials();
 
-	  // Dynamically build and send JOIN EUI command
-	  char cmd_join[64];
-	  sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
-	  HAL_Delay(400);
+      char app_key[33];
+      lorawan_config_build_app_key(app_key, sizeof(app_key));
 
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14, 300); // Set Sleep Mode to 2 seconds
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
-	  HAL_Delay(400);
-	  UART2_SetBaud(9600);
+      char cmd_app[128];
+      snprintf(cmd_app, sizeof(cmd_app), "AT%%S 500=\"%s\"\r\n", app_key);
+      (void)lorawan_send_command_expect(cmd_app, "OK", 1000, response, sizeof(response), &info);
+
+      if (credentials && credentials->dev_eui)
+      {
+        char cmd_dev[64];
+        snprintf(cmd_dev, sizeof(cmd_dev), "AT%%S 501=\"%s\"\r\n", credentials->dev_eui);
+        (void)lorawan_send_command_expect(cmd_dev, "OK", 1000, response, sizeof(response), &info);
+      }
+
+      if (credentials && credentials->join_eui)
+      {
+        char cmd_join[64];
+        snprintf(cmd_join, sizeof(cmd_join), "AT%%S 502=\"%s\"\r\n", credentials->join_eui);
+        (void)lorawan_send_command_expect(cmd_join, "OK", 1000, response, sizeof(response), &info);
+      }
+
+      (void)lorawan_send_command_expect("ATS 213=2000\r\n", "OK", 1000, response, sizeof(response), &info);
+      (void)lorawan_send_command_expect("AT&W\r\n", "OK", 1000, response, sizeof(response), &info);
+
+      // Soft reboot; allow the module some time to restart even if no explicit response
+      (void)lorawan_send_command_expect("ATZ\r\n", NULL, 500, response, sizeof(response), &info);
+      HAL_Delay(400);
+    }
   }
 
 
@@ -537,8 +919,8 @@ int main(void)
       }
 
       // Get I2C Data
-      HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-      HAL_Delay(1000); // sensor power-up and stabilization
+  HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+  HAL_Delay(APP_SENSOR_POWERUP_DELAY_MS); // sensor power-up and stabilization
       scan_i2c_bus();
       int i2c_success = sensor_init_and_read();
       HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
@@ -547,8 +929,8 @@ int main(void)
       uint8_t payload[6] = {0};
       if (i2c_success == 0)
       {
-        HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_SET);
-        HAL_Delay(300);
+  HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_SET);
+  HAL_Delay(APP_VBAT_SETTLE_DELAY_MS);
         int aproxBatteryTemp_c = ((calculated_temp_1 - 55) / 10);
         uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
         HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
@@ -558,7 +940,7 @@ int main(void)
         payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
         payload[2] = (uint8_t)(calculated_hum_1 >> 8);
         payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-        LoRaWAN_SendHex(payload, 4, 1);
+  LoRaWAN_SendHex(payload, 4, APP_FPORT_PRIMARY);
         // dbg_print_line("TX:done");
       }
       else
@@ -570,7 +952,7 @@ int main(void)
         if (i2c_success == 1 || i2c_success == 2 || i2c_success == 3)
         {
           uint8_t code = (uint8_t)i2c_success;
-          LoRaWAN_SendHex(&code, 1, 10);
+          LoRaWAN_SendHex(&code, 1, APP_FPORT_SENSOR_ERROR);
         }
         // if i2c_success is 4, then the sensors returned data, but do not agree on the correct temp
         if (i2c_success == 4)
@@ -584,7 +966,7 @@ int main(void)
           payload[3] = (uint8_t)(calculated_temp_2 >> 8);
           payload[4] = (uint8_t)(calculated_temp_2 & 0xFF);
           payload[5] = calculated_hum_2;
-          LoRaWAN_SendHex(payload, 6, 11); // send both dis-agreed values and an error
+          LoRaWAN_SendHex(payload, 6, APP_FPORT_SENSOR_DISAGREE); // send both dis-agreed values and an error
         }
       }
     }
@@ -653,10 +1035,6 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-
-  /** Enables the Clock Security System
-  */
-  HAL_RCCEx_EnableLSECSS();
 }
 
 /**
@@ -924,7 +1302,7 @@ static void MX_GPIO_Init(void)
 void configWakeupTime()
 {
   // Optional visual indicator that we (re)armed the wake-up
-  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
+  uint32_t wakeup_timer_value = (uint32_t)APP_SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
   // Deactivate previous timer before re-arming (HAL recommendation when changing value)
   HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
   if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
@@ -940,7 +1318,7 @@ void configWakeupTime()
  */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
-  /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
+  /* Increment counter - process LoRaWAN based on APP_SLEEP_TIME_MINUTES setting */
 
   wakeup_counter++;
 
