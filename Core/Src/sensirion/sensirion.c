@@ -69,7 +69,7 @@ int sensor_init_and_read(void)
     if (has_soil_sensor) {
         float ret[4];
         if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
-            HAL_Delay(120); // Sensor requires ~100 ms for measurement per vendor docs
+            HAL_Delay(400); // Sensor requires ~100 ms for measurement per vendor docs
             if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
                 // Successfully read soil sensor; you can process soil data here if needed
                 soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0

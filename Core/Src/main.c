@@ -17,6 +17,10 @@
  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
+#ifndef STM32L073xx
+#define STM32L073xx
+#endif
+
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -29,6 +33,8 @@
 
 #include "battery/vbat_lorawan.h"
 #include "sensirion/sensirion.h"
+#include "stm32l0xx_hal_rtc_ex.h"
+#include "stm32l0xx_hal_rcc_ex.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,12 +44,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SLEEP_TIME_MINUTES 10 // Sleep time in minutes between LoRaWAN transmissions
+#define SLEEP_TIME_MINUTES 1 // Sleep time in minutes between LoRaWAN transmissions
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
-#define SLEEP_INTERVAL_SECONDS 30
+#define SLEEP_INTERVAL_SECONDS 1
 
 #define DEV_EUI "0025CA0000005728"
 #define JOIN_EUI "0025CA00000055F7"
+#define ENABLE_LSE_CSS 0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -71,6 +78,10 @@ static bool first_run = true;                // Flag to ensure first transmissio
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
+static bool verify_wut_active_once = true;
+static bool lse_css_disabled_once = false;
+static bool rtc_backup_reset_once = false;
+static bool rtc_use_lsi_wakeup = false;
 
 //LoRaWAN UART Baud
 // Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
@@ -88,6 +99,8 @@ static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
+static bool rtc_reinitialize(bool use_lsi_clock);
+static void rtc_configure_init_struct(bool use_lsi_clock);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -120,6 +133,14 @@ static void dbg_print_line(const char *s)
     return;
   dbg_print(s);
   dbg_print("\r\n");
+}
+static void dbg_print_u32(const char *label, uint32_t value)
+{
+  char buf[48];
+  if (!label)
+    label = "";
+  (void)snprintf(buf, sizeof(buf), "%s%lu", label, (unsigned long)value);
+  dbg_print_line(buf);
 }
 static HAL_StatusTypeDef UART2_SetBaud(uint32_t br) {
   // Drain TX and stop RX before touching the peripheral
@@ -438,6 +459,9 @@ int main(void)
   MX_RTC_Init();
   MX_I2C1_Init();
   MX_ADC_Init();
+#if !ENABLE_LSE_CSS
+  HAL_RCCEx_DisableLSECSS();
+#endif
   /* USER CODE BEGIN 2 */
 
 
@@ -506,6 +530,11 @@ int main(void)
     ticks = wakeup_counter;
     wakeup_counter = 0;
     __enable_irq();
+
+    if (ticks == 0)
+    {
+      dbg_print_line("Wake ISR never fired");
+    }
 
     wakes_accum += ticks;
 
@@ -631,9 +660,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
-                              |RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_MSI |
+                                     RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.LSEState = rtc_use_lsi_wakeup ? RCC_LSE_OFF : RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = rtc_use_lsi_wakeup ? RCC_LSI_ON : RCC_LSI_OFF;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
@@ -658,20 +688,23 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_USART2
-                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_RTC;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1 | RCC_PERIPHCLK_USART2 |
+                                       RCC_PERIPHCLK_I2C1   | RCC_PERIPHCLK_RTC;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  PeriphClkInit.RTCClockSelection = rtc_use_lsi_wakeup ? RCC_RTCCLKSOURCE_LSI
+                                                       : RCC_RTCCLKSOURCE_LSE;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Enables the Clock Security System
+  /** Enables the Clock Security System (optional)
   */
+#if ENABLE_LSE_CSS
   HAL_RCCEx_EnableLSECSS();
+#endif
 }
 
 /**
@@ -796,25 +829,12 @@ static void MX_RTC_Init(void)
 
   /** Initialize RTC Only
   */
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  rtc_configure_init_struct(rtc_use_lsi_wakeup);
   if (HAL_RTC_Init(&hrtc) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Enable the WakeUp
-  */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
-  {
-    Error_Handler();
-  }
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
@@ -936,16 +956,185 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
-void configWakeupTime()
+static bool rtc_arm_wakeup(uint32_t ticks, uint32_t clock_source)
 {
-  // Optional visual indicator that we (re)armed the wake-up
-  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
-  // Deactivate previous timer before re-arming (HAL recommendation when changing value)
-  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  if (ticks == 0u)
   {
-    Error_Handler();
+    ticks = 1u; // minimum non-zero reload
   }
+  if (ticks > 0xFFFFu)
+  {
+    ticks = 0xFFFFu;
+  }
+
+  HAL_PWR_EnableBkUpAccess();
+
+  // Ignore potential HAL_ERROR if the timer was already disabled
+  HAL_StatusTypeDef deact = HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  if (deact != HAL_OK)
+  {
+    dbg_print_line("RTC:deactivate_failed");
+  }
+
+  uint32_t guard = 0u;
+  while (__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTWF) == RESET && guard++ < 0x10000u)
+  {
+    __NOP();
+  }
+
+  if (__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTWF) == RESET)
+  {
+    HAL_PWR_DisableBkUpAccess();
+    dbg_print_line("RTC:wutwf_timeout");
+    return false;
+  }
+
+  HAL_StatusTypeDef st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, ticks - 1u, clock_source);
+  HAL_PWR_DisableBkUpAccess();
+
+  if (st != HAL_OK)
+  {
+    dbg_print_line("RTC:arm_failed");
+    return false;
+  }
+
+  dbg_print_u32("RTC_CR(after arm)=", RTC->CR);
+  dbg_print_u32("RTC_WUTR(after arm)=", RTC->WUTR);
+  dbg_print_line(__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF) ? "RTC_WUTF(immediate)=1" : "RTC_WUTF(immediate)=0");
+
+  return true;
+}
+
+static void rtc_clear_all_wakeup_flags(void)
+{
+  HAL_PWR_EnableBkUpAccess();
+  __HAL_RTC_WRITEPROTECTION_DISABLE(&hrtc);
+  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+  __HAL_RTC_WRITEPROTECTION_ENABLE(&hrtc);
+  HAL_PWR_DisableBkUpAccess();
+
+  __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
+  __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_EVENT();
+  __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_IT();
+  __HAL_RTC_WAKEUPTIMER_EXTI_ENABLE_RISING_EDGE();
+
+  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
+}
+
+static void rtc_configure_init_struct(bool use_lsi_clock)
+{
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+
+  if (use_lsi_clock)
+  {
+    uint32_t lsi_hz = LSI_VALUE;
+    if (lsi_hz == 0u)
+    {
+      lsi_hz = 32000u;
+    }
+
+    uint32_t prediv_a = 127u;
+    uint32_t prediv_s = 0u;
+    uint32_t divisor = prediv_a + 1u;
+    if (divisor == 0u)
+    {
+      divisor = 1u;
+    }
+    prediv_s = (lsi_hz / divisor);
+    if (prediv_s > 0u)
+    {
+      prediv_s -= 1u;
+    }
+    if (prediv_s > 0x7FFFu)
+    {
+      prediv_s = 0x7FFFu;
+    }
+    if (prediv_s == 0u)
+    {
+      prediv_s = 1u;
+    }
+
+    hrtc.Init.AsynchPrediv = prediv_a;
+    hrtc.Init.SynchPrediv = prediv_s;
+  }
+  else
+  {
+    hrtc.Init.AsynchPrediv = 127u;
+    hrtc.Init.SynchPrediv = 255u;
+  }
+
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+}
+
+static bool rtc_reinitialize(bool use_lsi_clock)
+{
+  HAL_PWR_EnableBkUpAccess();
+
+  if (HAL_RTC_DeInit(&hrtc) != HAL_OK)
+  {
+    dbg_print_line("RTC diag: HAL_RTC_DeInit failed");
+  }
+
+  rtc_configure_init_struct(use_lsi_clock);
+
+  hrtc.Lock = HAL_UNLOCKED;
+  hrtc.State = HAL_RTC_STATE_RESET;
+
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    HAL_PWR_DisableBkUpAccess();
+    return false;
+  }
+
+  HAL_PWR_DisableBkUpAccess();
+
+  return true;
+}
+
+bool configWakeupTime(void)
+{
+  uint32_t wakeup_ticks;
+  uint32_t clock_source;
+
+  if (rtc_use_lsi_wakeup)
+  {
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET)
+    {
+      RCC_OscInitTypeDef osc = {0};
+      osc.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+      osc.LSIState = RCC_LSI_ON;
+      osc.PLL.PLLState = RCC_PLL_NONE;
+      if (HAL_RCC_OscConfig(&osc) != HAL_OK)
+      {
+        dbg_print_line("RTC:LSI_on_failed");
+        return false;
+      }
+    }
+
+    uint32_t lsi_hz = LSI_VALUE;
+    if (lsi_hz == 0u)
+    {
+      lsi_hz = 32000u;
+    }
+
+    wakeup_ticks = (uint32_t)((uint64_t)SLEEP_INTERVAL_SECONDS * (uint64_t)lsi_hz / 16u);
+    if (wakeup_ticks == 0u)
+    {
+      wakeup_ticks = 1u;
+    }
+    clock_source = RTC_WAKEUPCLOCK_RTCCLK_DIV16;
+  }
+  else
+  {
+    wakeup_ticks = (uint32_t)SLEEP_INTERVAL_SECONDS;
+    clock_source = RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
+  }
+
+  return rtc_arm_wakeup(wakeup_ticks, clock_source);
 }
 /**
  * @brief  Wakeup Timer callback.
@@ -956,7 +1145,8 @@ void configWakeupTime()
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
   /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
-
+  dbg_print_line("RTC IRQ fired");
+  HAL_GPIO_TogglePin(DBG_LED_GPIO_Port, DBG_LED_Pin);
   wakeup_counter++;
 
   /* Clear the wake-up timer flag to acknowledge the interrupt */
@@ -1024,15 +1214,251 @@ void RestoreGPIOAfterWakeup(void)
  */
 void EnterDeepSleepMode(void)
 {
-  /* Properly deinitialize UARTs before sleep */
+  char buf[40];
+  snprintf(buf, sizeof(buf), "RTC_ISR=0x%08lx", (unsigned long)RTC->ISR);
+  dbg_print_line(buf);
+
+  if (!configWakeupTime())
+  {
+    dbg_print_line("RTC:arm_error");
+    HAL_ResumeTick();
+    return;
+  }
+
+  rtc_clear_all_wakeup_flags();
+
+  if (verify_wut_active_once)
+  {
+    verify_wut_active_once = false;
+    bool repeat_diag = true;
+
+    while (repeat_diag)
+    {
+      repeat_diag = false;
+
+      dbg_print_line("RTC diag: build marker 2025-10-04B");
+      dbg_print_line("RTC diag: waiting active for wake");
+      uint32_t waited_ms = 0u;
+      bool fired = false;
+
+      dbg_print_line(__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) ? "LSE ready" : "LSE NOT ready");
+      dbg_print_line(__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) ? "LSI ready" : "LSI NOT ready");
+      uint32_t csr = RCC->CSR;
+      dbg_print_u32("RCC_CSR=", csr);
+
+      if (!lse_css_disabled_once && (csr & RCC_CSR_LSECSSD) != 0u)
+      {
+        dbg_print_line("LSE CSS fault latched -> disabling CSS and refreshing LSE");
+        HAL_RCCEx_DisableLSECSS();
+        __HAL_RCC_CLEAR_IT(RCC_IT_LSECSS);
+
+        HAL_PWR_EnableBkUpAccess();
+        __HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
+        uint32_t lse_guard = 0u;
+        while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET && lse_guard++ < 5000u)
+        {
+          HAL_Delay(1);
+        }
+        HAL_PWR_DisableBkUpAccess();
+
+        if (!rtc_arm_wakeup((uint32_t)SLEEP_INTERVAL_SECONDS, RTC_WAKEUPCLOCK_CK_SPRE_16BITS))
+        {
+          dbg_print_line("RTC:arm_error_after_css");
+        }
+        else
+        {
+          rtc_clear_all_wakeup_flags();
+        }
+
+        lse_css_disabled_once = true;
+        dbg_print_u32("RCC_CSR(after CSS disable)=", RCC->CSR);
+        repeat_diag = true;
+        continue;
+      }
+
+      uint32_t ssr_start = RTC->SSR;
+      uint32_t ssr_last = ssr_start;
+
+      while (waited_ms < 1500u)
+      {
+        HAL_Delay(50);
+        waited_ms += 50u;
+        ssr_last = RTC->SSR;
+        if (__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF))
+        {
+          fired = true;
+          dbg_print_u32("RTC diag: WUTF set at ms=", waited_ms);
+          break;
+        }
+      }
+
+      if (fired)
+      {
+        rtc_clear_all_wakeup_flags();
+        if (!configWakeupTime())
+        {
+          dbg_print_line("RTC:rearm_failed_after_diag");
+        }
+        else
+        {
+          rtc_clear_all_wakeup_flags();
+        }
+        break;
+      }
+
+      dbg_print_line(rtc_backup_reset_once ? "RTC diag: fallback already used" : "RTC diag: fallback available");
+      dbg_print_line("RTC diag: WUTF did not fire while active window");
+      dbg_print_u32("RTC_ISR(diag end)=", RTC->ISR);
+      dbg_print_u32("RTC_CR(diag end)=", RTC->CR);
+      dbg_print_u32("RTC_PRER=", RTC->PRER);
+      dbg_print_u32("RTC_SSR(start)=", ssr_start);
+      dbg_print_u32("RTC_SSR(end)=", ssr_last);
+
+      if (!rtc_backup_reset_once)
+      {
+        rtc_backup_reset_once = true;
+        dbg_print_line("RTC diag: forcing backup domain reset and RTC reinit");
+        HAL_PWR_EnableBkUpAccess();
+        __HAL_RCC_RTC_DISABLE();
+        __HAL_RCC_BACKUPRESET_FORCE();
+        HAL_Delay(2);
+        __HAL_RCC_BACKUPRESET_RELEASE();
+
+        __HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
+        uint32_t lse_guard = 0u;
+        while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET && lse_guard++ < 5000u)
+        {
+          HAL_Delay(1);
+        }
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
+        {
+          dbg_print_line("RTC diag: LSE still not ready after backup reset");
+        }
+
+        RCC_PeriphCLKInitTypeDef periph = {0};
+        periph.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+        periph.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+        if (HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK)
+        {
+          dbg_print_line("RTC diag: HAL_RCCEx_PeriphCLKConfig(LSE) failed");
+        }
+
+        __HAL_RCC_RTC_ENABLE();
+        HAL_PWR_DisableBkUpAccess();
+
+#if !ENABLE_LSE_CSS
+        HAL_RCCEx_DisableLSECSS();
+#endif
+
+        if (!rtc_reinitialize(false))
+        {
+          dbg_print_line("RTC diag: HAL_RTC_Init failed after backup reset");
+        }
+        else
+        {
+          dbg_print_line("RTC diag: HAL_RTC_Init ok after backup reset");
+        }
+
+        if (!configWakeupTime())
+        {
+          dbg_print_line("RTC:arm_error_after_backup_reset");
+        }
+        else
+        {
+          rtc_clear_all_wakeup_flags();
+        }
+
+        dbg_print_line("RTC diag: backup reset applied, rechecking WUT");
+        repeat_diag = true;
+        continue;
+      }
+
+      if (!rtc_use_lsi_wakeup)
+      {
+        dbg_print_line("RTC diag: switching wake source to LSI");
+        rtc_use_lsi_wakeup = true;
+
+        HAL_PWR_EnableBkUpAccess();
+        __HAL_RCC_RTC_DISABLE();
+        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+
+        RCC_OscInitTypeDef osc = {0};
+        osc.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+        osc.LSIState = RCC_LSI_ON;
+        osc.PLL.PLLState = RCC_PLL_NONE;
+        if (HAL_RCC_OscConfig(&osc) != HAL_OK)
+        {
+          dbg_print_line("RTC diag: HAL_RCC_OscConfig(LSI) failed");
+        }
+
+        RCC_PeriphCLKInitTypeDef periph = {0};
+        periph.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+        periph.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+        if (HAL_RCCEx_PeriphCLKConfig(&periph) != HAL_OK)
+        {
+          dbg_print_line("RTC diag: HAL_RCCEx_PeriphCLKConfig(LSI) failed");
+        }
+
+        __HAL_RCC_RTC_ENABLE();
+        HAL_PWR_DisableBkUpAccess();
+        dbg_print_line("RTC diag: RTCCLK switched to LSI");
+
+        if (!rtc_reinitialize(true))
+        {
+          dbg_print_line("RTC diag: HAL_RTC_Init failed after LSI switch");
+        }
+        else
+        {
+          dbg_print_line("RTC diag: HAL_RTC_Init ok after LSI switch");
+        }
+
+        if (!configWakeupTime())
+        {
+          dbg_print_line("RTC:arm_error_after_lsi_switch");
+        }
+        else
+        {
+          rtc_clear_all_wakeup_flags();
+        }
+
+        dbg_print_line("RTC diag: LSI fallback armed, rechecking WUT");
+        repeat_diag = true;
+        continue;
+      }
+
+      dbg_print_line("RTC diag: proceeding to STOP without further recovery attempts");
+      repeat_diag = false;
+      break;
+    }
+    dbg_print_line("RTC diag: exit -> continuing to STOP");
+  }
+
+  rtc_clear_all_wakeup_flags();
+
+  uint32_t iser = NVIC->ISER[RTC_IRQn >> 5u];
+  bool nvic_enabled = ((iser & (1UL << (RTC_IRQn & 0x1Fu))) != 0u);
+  dbg_print_line(nvic_enabled ? "NVIC RTC IRQ enabled" : "NVIC RTC IRQ DISABLED");
+  dbg_print_line(NVIC_GetPendingIRQ(RTC_IRQn) ? "NVIC RTC pending=1" : "NVIC RTC pending=0");
+
+  dbg_print_line("RTC WUTF cleared before STOP");
+  dbg_print_u32("RTC_ISR(before STOP)=", RTC->ISR);
+  dbg_print_u32("RTC_CR(before STOP)=", RTC->CR);
+  dbg_print_u32("RTC_WUTR(before STOP)=", RTC->WUTR);
+  dbg_print_line(__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF) ? "RTC_WUTF(after clear)=1" : "RTC_WUTF(after clear)=0");
+  dbg_print_line(__HAL_RTC_WAKEUPTIMER_EXTI_GET_FLAG() ? "EXTI20(after clear)=1" : "EXTI20(after clear)=0");
+  dbg_print_line(__HAL_PWR_GET_FLAG(PWR_FLAG_WU) ? "PWR_WUF(after clear)=1" : "PWR_WUF(after clear)=0");
+
+  uint32_t dbgcr_before = DBGMCU->CR;
+  dbg_print_u32("DBGMCU->CR(before STOP)=", dbgcr_before);
+  DBGMCU->CR &= ~(DBGMCU_CR_DBG_SLEEP | DBGMCU_CR_DBG_STOP | DBGMCU_CR_DBG_STANDBY);
+  dbg_print_u32("DBGMCU->CR(after clear)=", DBGMCU->CR);
+
   HAL_UART_DeInit(&huart1);
   //  HAL_UART_DeInit(&huart2);
   HAL_I2C_DeInit(&hi2c1);
 
-  /* Configure all GPIOs for ultra-low power */
   ConfigureGPIOForLowPower();
 
-  /* Disable unnecessary peripheral clocks */
   __HAL_RCC_I2C1_CLK_DISABLE();
   __HAL_RCC_USART1_CLK_DISABLE();
   __HAL_RCC_USART2_CLK_DISABLE();
@@ -1041,17 +1467,10 @@ void EnterDeepSleepMode(void)
   __HAL_RCC_GPIOD_CLK_DISABLE();
   __HAL_RCC_GPIOH_CLK_DISABLE();
 
-  /* Suspend SysTick to avoid wake-up from SysTick interrupt */
+  HAL_Delay(10);
+
   HAL_SuspendTick();
 
-  /* Clear any pending wake-up flags before sleeping */
-  __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
-  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
-
-  /* Restart the RTC wake-up timer for next wake-up */
-  configWakeupTime();
-
-  /* Enter STOP Mode with Low Power Regulator */
   HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
   /* === DEVICE IS NOW IN DEEP SLEEP === */
@@ -1074,6 +1493,11 @@ void EnterDeepSleepMode(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   //  MX_USART2_UART_Init();
+
+  dbg_print_u32("RTC_ISR(after STOP)=", RTC->ISR);
+  dbg_print_line(__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF) ? "RTC_WUTF(after STOP)=1" : "RTC_WUTF(after STOP)=0");
+  dbg_print_line(__HAL_RTC_WAKEUPTIMER_EXTI_GET_FLAG() ? "EXTI20(after STOP)=1" : "EXTI20(after STOP)=0");
+  dbg_print_line(__HAL_PWR_GET_FLAG(PWR_FLAG_WU) ? "PWR_WUF(after STOP)=1" : "PWR_WUF(after STOP)=0");
 
   /* Resume SysTick */
   HAL_ResumeTick();
