@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA0000000500"
+#define DEV_EUI "0025CA0000005728"
 #define JOIN_EUI "0025CA00000055F7"
 /* USER CODE END PD */
 
@@ -543,8 +543,6 @@ int main(void)
       int i2c_success = sensor_init_and_read();
       HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
-      // Format data and send
-      uint8_t payload[6] = {0};
       if (i2c_success == 0)
       {
         HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_SET);
@@ -554,12 +552,29 @@ int main(void)
         HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
         lorawan_set_battery_level(&huart2, battery);
 
-        payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-        payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-        payload[2] = (uint8_t)(calculated_hum_1 >> 8);
-        payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-        LoRaWAN_SendHex(payload, 4, 1);
-        // dbg_print_line("TX:done");
+        if (has_soil_sensor)
+        {
+          uint8_t soil_payload[8] = {0};
+          soil_payload[0] = (uint8_t)(soil_e25 >> 8);
+          soil_payload[1] = (uint8_t)(soil_e25 & 0xFF);
+          soil_payload[2] = (uint8_t)(soil_EC >> 8);
+          soil_payload[3] = (uint8_t)(soil_EC & 0xFF);
+          soil_payload[4] = (uint8_t)(soil_temp >> 8);
+          soil_payload[5] = (uint8_t)(soil_temp & 0xFF);
+          soil_payload[6] = (uint8_t)(soil_VWC >> 8);
+          soil_payload[7] = (uint8_t)(soil_VWC & 0xFF);
+
+          LoRaWAN_SendHex(soil_payload, sizeof(soil_payload), 2);
+        }
+        else
+        {
+        	uint8_t payload[6] = {0};
+        	payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+			payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+			payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+			payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
+			LoRaWAN_SendHex(payload, 4, 1);
+        }
       }
       else
       {
@@ -576,7 +591,7 @@ int main(void)
         if (i2c_success == 4)
         {
           // add the dis-agreed sensor info to payload
-
+          uint8_t payload[6] = {0};
           payload[0] = (uint8_t)(calculated_temp_1 >> 8);
           payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
           payload[2] = calculated_hum_1;

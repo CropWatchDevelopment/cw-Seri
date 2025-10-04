@@ -53,6 +53,13 @@ function encH(hPercent) {
   return [(raw >> 8) & 0xff, raw & 0xff];
 }
 
+function encSoil(value, scale) {
+  let raw = Math.round(value * scale);
+  if (raw < -32768 || raw > 32767) throw new RangeError('Soil raw out of int16 range: ' + raw);
+  if (raw < 0) raw = 65536 + raw;
+  return [(raw >> 8) & 0xff, raw & 0xff];
+}
+
 // ---------- Tests ----------
 describe('decodeUplink fPort=1 temperature sweep (-110..110°C)', () => {
   test('sweeps temperature and validates decoding + warnings range', () => {
@@ -108,6 +115,60 @@ describe('decodeUplink fPort=10 error code mapping', () => {
   test('payload too short error', () => {
     const res = decodeUplink({ fPort: 10, bytes: [] });
     expect(res.errors[0]).toMatch(/Payload too short on fPort 10/);
+  });
+});
+
+describe('decodeUplink fPort=2 soil packet', () => {
+  test('decodes soil metrics correctly', () => {
+    const e25 = encSoil(12.34, 100);
+    const ec = encSoil(1.5, 10);
+    const soilTemp = encSoil(18.75, 100);
+    const vwc = encSoil(45.6, 10);
+
+    const bytes = [
+      e25[0], e25[1],
+      ec[0], ec[1],
+      soilTemp[0], soilTemp[1],
+      vwc[0], vwc[1],
+    ];
+
+    const res = decodeUplink({ fPort: 2, bytes });
+
+    expect(res.errors).toEqual([]);
+    expect(res.data.sensor).toBe('soil');
+    expect(res.data.soil_epsilon25).toBeCloseTo(12.34, 2);
+    expect(res.data.soil_ec_mScm).toBeCloseTo(1.5, 2);
+    expect(res.data.soil_temperature_c).toBeCloseTo(18.75, 2);
+    expect(res.data.soil_vwc_percent).toBeCloseTo(45.6, 1);
+    expect(res.warnings).toEqual([]);
+  });
+
+  test('flags out-of-range soil values', () => {
+    const e25 = encSoil(5, 100);
+    const ec = encSoil(0.2, 10);
+    const soilTemp = encSoil(-50, 100); // out of range
+    const vwc = encSoil(120, 10);       // >100%
+
+    const bytes = [
+      e25[0], e25[1],
+      ec[0], ec[1],
+      soilTemp[0], soilTemp[1],
+      vwc[0], vwc[1],
+    ];
+
+    const res = decodeUplink({ fPort: 2, bytes });
+
+    expect(res.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/Soil temperature out of typical range/),
+        expect.stringMatching(/Soil VWC outside 0-100% range/),
+      ])
+    );
+  });
+
+  test('payload too short error', () => {
+    const res = decodeUplink({ fPort: 2, bytes: [0x00] });
+    expect(res.errors[0]).toMatch(/Payload too short on fPort 2/);
   });
 });
 
