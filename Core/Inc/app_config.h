@@ -9,8 +9,14 @@
 #include <stdint.h>
 
 /* LoRaWAN transmission cadence */
-#define APP_SLEEP_TIME_MINUTES        10U   /**< Minutes between uplinks. */
+#define APP_SLEEP_TIME_MINUTES        1U   /**< Minutes between uplinks. */
 #define APP_SLEEP_INTERVAL_SECONDS    30U   /**< RTC wake-up interval in seconds. */
+
+/* LSE diagnostic build configuration */
+#define APP_LSE_TEST_MODE                 1U /**< Set to 1 to enable dedicated LSE crystal diagnostics. */
+#define APP_LSE_TEST_WAKE_SECONDS         10U /**< Target RTC wake interval (seconds) during LSE test. */
+#define APP_LSE_TEST_EXPECTED_INTERVAL_MS (APP_LSE_TEST_WAKE_SECONDS * 1000UL)
+#define APP_LSE_TEST_DRIFT_TOLERANCE_MS   250UL /**< Acceptable drift before logging a warning. */
 
 /* Peripheral power budgeting */
 #define APP_SENSOR_POWERUP_DELAY_MS   1000U /**< Delay for sensor power stabilization. */

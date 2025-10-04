@@ -29,6 +29,10 @@
 #include "sensirion/sensirion.h"
 #include "lorawan_config.h"
 #include "app_config.h"
+#if APP_LSE_TEST_MODE
+static void LSE_Test_Init(void);
+static void LSE_Test_Loop(void);
+#endif
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -62,17 +66,31 @@ UART_HandleTypeDef huart2;
 
 int is_connected = 0;
 
-static volatile uint16_t wakeup_counter = 0; // incremented in ISR
-static uint16_t wakes_accum = 0;             // main-loop accumulator
-static bool first_run = true;                // Flag to ensure first transmission happens immediately
-// Number of wakeups per transmission cycle (ceil division to avoid truncation)
-static const uint16_t WAKEUPS_PER_CYCLE =
-  (uint16_t)((APP_SLEEP_TIME_MINUTES * 60u + (APP_SLEEP_INTERVAL_SECONDS - 1u)) / APP_SLEEP_INTERVAL_SECONDS);
-
 //LoRaWAN UART Baud
 // Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
 // then switch forever to 9600 after we switch the baud of the ezurio module.
 uint32_t baudRate = 115200;
+#if APP_LSE_TEST_MODE
+static volatile bool g_lse_wake_flag = false;
+static volatile uint32_t g_lse_wake_count = 0;
+static uint32_t g_lse_last_tick_ms = 0;
+#else
+static volatile uint16_t wakeup_counter = 0; // incremented in ISR
+static uint16_t wakes_accum = 0;             // main-loop accumulator
+static bool first_run = true;                // Flag to ensure first transmission happens immediately
+static const uint16_t WAKEUPS_PER_CYCLE =
+  (uint16_t)((APP_SLEEP_TIME_MINUTES * 60u + (APP_SLEEP_INTERVAL_SECONDS - 1u)) / APP_SLEEP_INTERVAL_SECONDS);
+#endif
+
+enum
+{
+  RCC_CONFIG_STAGE_OSC = 1u,
+  RCC_CONFIG_STAGE_CLOCK = 2u
+};
+
+static volatile uint32_t g_rcc_config_error = 0;
+static volatile uint32_t g_rcc_csr_snapshot = 0;
+static volatile uint32_t g_rcc_cr_snapshot = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,6 +137,7 @@ static void dbg_print_line(const char *s)
   dbg_print("\r\n");
 }
 
+#if !APP_LSE_TEST_MODE
 typedef struct
 {
   size_t length;
@@ -774,6 +793,8 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
   (void)LoRaWAN_set_fport(APP_FPORT_PRIMARY);
 }
 
+#endif /* !APP_LSE_TEST_MODE */
+
 /* USER CODE END 0 */
 
 /**
@@ -812,6 +833,14 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
+#if APP_LSE_TEST_MODE
+  LSE_Test_Init();
+  while (1)
+  {
+    LSE_Test_Loop();
+    EnterDeepSleepMode();
+  }
+#else
 
   int need_provision = uart2_probe_and_align();
   if (need_provision == 1)
@@ -973,6 +1002,7 @@ int main(void)
     // Always go back to deep sleep to allow next RTC wake
     EnterDeepSleepMode();
   }
+#endif
   /* USER CODE END 3 */
 }
 
@@ -1009,6 +1039,10 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
+    g_rcc_config_error = RCC_CONFIG_STAGE_OSC;
+    g_rcc_csr_snapshot = RCC->CSR;
+    g_rcc_cr_snapshot = RCC->CR;
+    __NOP();
     Error_Handler();
   }
 
@@ -1023,6 +1057,10 @@ void SystemClock_Config(void)
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
   {
+    g_rcc_config_error = RCC_CONFIG_STAGE_CLOCK;
+    g_rcc_csr_snapshot = RCC->CSR;
+    g_rcc_cr_snapshot = RCC->CR;
+    __NOP();
     Error_Handler();
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_USART2
@@ -1299,14 +1337,67 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+#if APP_LSE_TEST_MODE
+static void LSE_Test_Init(void)
+{
+  dbg_print_line("=== LSE diagnostic firmware ===");
+  dbg_print_line(__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) ? "LSE ready at boot" : "LSE not ready at boot");
+  g_lse_last_tick_ms = HAL_GetTick();
+}
+
+static void LSE_Test_Loop(void)
+{
+  if (!g_lse_wake_flag)
+  {
+    return;
+  }
+
+  g_lse_wake_flag = false;
+
+  HAL_GPIO_TogglePin(DBG_LED_GPIO_Port, DBG_LED_Pin);
+
+  uint32_t now = HAL_GetTick();
+  uint32_t delta = now - g_lse_last_tick_ms;
+  g_lse_last_tick_ms = now;
+
+  char buf[96];
+  int len = snprintf(buf, sizeof(buf),
+                     "LSE wake %lu | delta=%lums | LSERDY=%d\r\n",
+                     (unsigned long)g_lse_wake_count,
+                     (unsigned long)delta,
+                     __HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) ? 1 : 0);
+  if (len > 0)
+  {
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)len, 200);
+  }
+
+  const uint32_t lower_bound = (APP_LSE_TEST_EXPECTED_INTERVAL_MS > APP_LSE_TEST_DRIFT_TOLERANCE_MS)
+                                 ? (APP_LSE_TEST_EXPECTED_INTERVAL_MS - APP_LSE_TEST_DRIFT_TOLERANCE_MS)
+                                 : 0u;
+  const uint32_t upper_bound = APP_LSE_TEST_EXPECTED_INTERVAL_MS + APP_LSE_TEST_DRIFT_TOLERANCE_MS;
+  if (delta < lower_bound || delta > upper_bound)
+  {
+    dbg_print_line("LSE drift warning: interval out of tolerance");
+  }
+}
+#endif
+
 void configWakeupTime()
 {
   // Optional visual indicator that we (re)armed the wake-up
+#if APP_LSE_TEST_MODE
+  uint32_t wakeup_timer_value = (uint32_t)APP_LSE_TEST_WAKE_SECONDS * 2048u - 1u;
+#else
   uint32_t wakeup_timer_value = (uint32_t)APP_SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
+#endif
   // Deactivate previous timer before re-arming (HAL recommendation when changing value)
   HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  HAL_StatusTypeDef rc = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
+  if (rc != HAL_OK)
   {
+#if APP_LSE_TEST_MODE
+    dbg_print_line("LSE: wake timer arm failed");
+#endif
     Error_Handler();
   }
 }
@@ -1320,10 +1411,19 @@ void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
   /* Increment counter - process LoRaWAN based on APP_SLEEP_TIME_MINUTES setting */
 
+  __NOP(); // Marker: wake-up interrupt entered (scope/trigger)
+
+#if APP_LSE_TEST_MODE
+  g_lse_wake_count++;
+  g_lse_wake_flag = true;
+#else
   wakeup_counter++;
+#endif
 
   /* Clear the wake-up timer flag to acknowledge the interrupt */
   __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc, RTC_FLAG_WUTF);
+
+  __NOP(); // Marker: wake-up interrupt exiting
 }
 
 /**
@@ -1392,6 +1492,8 @@ void EnterDeepSleepMode(void)
   //  HAL_UART_DeInit(&huart2);
   HAL_I2C_DeInit(&hi2c1);
 
+  __NOP(); // Marker: peripherals deinitialized before STOP entry
+
   /* Configure all GPIOs for ultra-low power */
   ConfigureGPIOForLowPower();
 
@@ -1414,11 +1516,16 @@ void EnterDeepSleepMode(void)
   /* Restart the RTC wake-up timer for next wake-up */
   configWakeupTime();
 
+  __NOP(); // Marker: wake timer re-armed
+
   /* Enter STOP Mode with Low Power Regulator */
+  __NOP(); // Marker: about to enter STOP mode
   HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
   /* === DEVICE IS NOW IN DEEP SLEEP === */
   /* === WAKE UP OCCURS HERE === */
+
+  __NOP(); // Marker: woke from STOP mode
 
   /* Upon wake-up, the system clock needs to be reconfigured */
   SystemClock_Config();
