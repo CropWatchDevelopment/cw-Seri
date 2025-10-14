@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA0000000500"
+#define DEV_EUI "0025CA0000005638"
 #define JOIN_EUI "0025CA00000055F7"
 /* USER CODE END PD */
 
@@ -72,9 +72,9 @@ static bool first_run = true;                // Flag to ensure first transmissio
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
-//LoRaWAN UART Baud
-// Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
-// then switch forever to 9600 after we switch the baud of the ezurio module.
+// LoRaWAN UART Baud
+//  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
+//  then switch forever to 9600 after we switch the baud of the ezurio module.
 uint32_t baudRate = 115200;
 /* USER CODE END PV */
 
@@ -121,67 +121,77 @@ static void dbg_print_line(const char *s)
   dbg_print(s);
   dbg_print("\r\n");
 }
-static HAL_StatusTypeDef UART2_SetBaud(uint32_t br) {
+static HAL_StatusTypeDef UART2_SetBaud(uint32_t br)
+{
   // Drain TX and stop RX before touching the peripheral
-  while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TC) == RESET) { /* wait */ }
+  while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TC) == RESET)
+  { /* wait */
+  }
   HAL_UART_AbortReceive(&huart2);
   __HAL_UART_FLUSH_DRREGISTER(&huart2);
   __HAL_UART_CLEAR_IDLEFLAG(&huart2);
   __HAL_UART_CLEAR_FLAG(&huart2, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
-  if (huart2.Init.BaudRate == br) return HAL_OK;
+  if (huart2.Init.BaudRate == br)
+    return HAL_OK;
   HAL_UART_DeInit(&huart2);
   huart2.Init.BaudRate = br;
   return HAL_UART_Init(&huart2);
 }
 
-
-
-
-
-static void uart2_rx_flush(UART_HandleTypeDef *huart) {
+static void uart2_rx_flush(UART_HandleTypeDef *huart)
+{
   HAL_UART_AbortReceive(huart);
   __HAL_UART_FLUSH_DRREGISTER(huart);
   __HAL_UART_CLEAR_IDLEFLAG(huart);
   __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 }
 
-static int uart2_probe_and_align(void) {
+static int uart2_probe_and_align(void)
+{
   // Try 9600 first, then 115200
-  const uint32_t bauds[2] = { 9600u, 115200u };
+  const uint32_t bauds[2] = {9600u, 115200u};
   uint8_t buf[64];
   uint16_t got = 0;
 
-  for (int pass = 0; pass < 2; ++pass) {
+  for (int pass = 0; pass < 2; ++pass)
+  {
     uint32_t br = bauds[pass];
 
     // Ensure UART really is at this baud
     UART2_SetBaud(br);
     HAL_Delay(30);
 
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
       uart2_rx_flush(&huart2);
       HAL_Delay(10);
 
       // Some modules need a nudge when sleeping
       const uint8_t at[] = "AT\r";
-      HAL_UART_Transmit(&huart2, (uint8_t*)at, sizeof(at)-1, 50);
+      HAL_UART_Transmit(&huart2, (uint8_t *)at, sizeof(at) - 1, 50);
 
       memset(buf, 0, sizeof buf);
       got = 0;
-      if (HAL_UARTEx_ReceiveToIdle(&huart2, buf, sizeof buf, &got, 300) == HAL_OK && got > 0) {
+      if (HAL_UARTEx_ReceiveToIdle(&huart2, buf, sizeof buf, &got, 300) == HAL_OK && got > 0)
+      {
         // Look for typical tokens anywhere in the frame
-        for (uint16_t i = 0; i + 1 < got; ++i) {
-          if (buf[i]=='O' && buf[i+1]=='K') return pass; // 0 if 9600, 1 if 115200
+        for (uint16_t i = 0; i + 1 < got; ++i)
+        {
+          if (buf[i] == 'O' && buf[i + 1] == 'K')
+            return pass; // 0 if 9600, 1 if 115200
         }
         // Some stacks send banners first; send AT once more immediately
         uart2_rx_flush(&huart2);
-        HAL_UART_Transmit(&huart2, (uint8_t*)at, sizeof(at)-1, 50);
+        HAL_UART_Transmit(&huart2, (uint8_t *)at, sizeof(at) - 1, 50);
         memset(buf, 0, sizeof buf);
         got = 0;
-        if (HAL_UARTEx_ReceiveToIdle(&huart2, buf, sizeof buf, &got, 300) == HAL_OK && got > 0) {
-          for (uint16_t i = 0; i + 1 < got; ++i) {
-            if (buf[i]=='O' && buf[i+1]=='K') return pass;
+        if (HAL_UARTEx_ReceiveToIdle(&huart2, buf, sizeof buf, &got, 300) == HAL_OK && got > 0)
+        {
+          for (uint16_t i = 0; i + 1 < got; ++i)
+          {
+            if (buf[i] == 'O' && buf[i + 1] == 'K')
+              return pass;
           }
         }
       }
@@ -191,9 +201,6 @@ static int uart2_probe_and_align(void) {
 
   return -1; // still nothing at either rate
 }
-
-
-
 
 char find_char_after(const char *str, const char *keyword)
 {
@@ -405,9 +412,9 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
@@ -440,56 +447,55 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
-
   int need_provision = uart2_probe_and_align();
-  if (need_provision == 1) {
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
-	  HAL_Delay(400);
-	  // Set LoRaWAN Settings
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 603=0\r\n", 11, 300); // Set CLASS to A
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=1\r\n", 11, 300); // Confirmed 0 = NO, 1 = yes
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 605=3\r\n", 11, 300); // Retry if Confirm Fails, 3 Retries set (and is default)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 302=9600\r\n", 14, 300);
-	  HAL_Delay(400);
+  if (need_provision == 1)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
+    HAL_Delay(400);
+    // Set LoRaWAN Settings
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 602=1\r\n", 11, 300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 603=0\r\n", 11, 300); // Set CLASS to A
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=1\r\n", 11, 300); // Confirmed 0 = NO, 1 = yes
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 605=3\r\n", 11, 300); // Retry if Confirm Fails, 3 Retries set (and is default)
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 611=9\r\n", 11, 300); // Set Region to AS923-1 (JAPAN)
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 302=9600\r\n", 14, 300);
+    HAL_Delay(400);
 
-	  // Dynamically concatenate DEV_EUI and JOIN_EUI to form APP_KEY
-	  char app_key[33]; // 16 (DEV_EUI) + 16 (JOIN_EUI) + 1 (null terminator)
-	  sprintf(app_key, "%s%s", DEV_EUI, JOIN_EUI);
+    // Dynamically concatenate DEV_EUI and JOIN_EUI to form APP_KEY
+    char app_key[33]; // 16 (DEV_EUI) + 16 (JOIN_EUI) + 1 (null terminator)
+    sprintf(app_key, "%s%s", DEV_EUI, JOIN_EUI);
 
-	  // Build and send APP KEY command
-	  char cmd_app[128]; // Buffer for full command
-	  sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
-	  HAL_Delay(400);
+    // Build and send APP KEY command
+    char cmd_app[128]; // Buffer for full command
+    sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
+    HAL_Delay(400);
 
-	  // Dynamically build and send DEV EUI command
-	  char cmd_dev[64];
-	  sprintf(cmd_dev, "AT%%S 501=\"%s\"\r\n", DEV_EUI);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, strlen(cmd_dev), 300);
-	  HAL_Delay(400);
+    // Dynamically build and send DEV EUI command
+    char cmd_dev[64];
+    sprintf(cmd_dev, "AT%%S 501=\"%s\"\r\n", DEV_EUI);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, strlen(cmd_dev), 300);
+    HAL_Delay(400);
 
-	  // Dynamically build and send JOIN EUI command
-	  char cmd_join[64];
-	  sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
-	  HAL_Delay(400);
+    // Dynamically build and send JOIN EUI command
+    char cmd_join[64];
+    sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
+    HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
+    HAL_Delay(400);
 
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14, 300); // Set Sleep Mode to 2 seconds
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
-	  HAL_Delay(400);
-	  HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
-	  HAL_Delay(400);
-	  UART2_SetBaud(9600);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14, 300); // Set Sleep Mode to 2 seconds
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
+    HAL_Delay(400);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
+    HAL_Delay(400);
+    UART2_SetBaud(9600);
   }
-
 
   /* USER CODE END 2 */
 
@@ -554,12 +560,29 @@ int main(void)
         HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
         lorawan_set_battery_level(&huart2, battery);
 
-        payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-        payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-        payload[2] = (uint8_t)(calculated_hum_1 >> 8);
-        payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-        LoRaWAN_SendHex(payload, 4, 1);
-        // dbg_print_line("TX:done");
+        if (has_soil_sensor)
+                {
+                  uint8_t soil_payload[8] = {0};
+                  soil_payload[0] = (uint8_t)(soil_e25 >> 8);
+                  soil_payload[1] = (uint8_t)(soil_e25 & 0xFF);
+                  soil_payload[2] = (uint8_t)(soil_EC >> 8);
+                  soil_payload[3] = (uint8_t)(soil_EC & 0xFF);
+                  soil_payload[4] = (uint8_t)(soil_temp >> 8);
+                  soil_payload[5] = (uint8_t)(soil_temp & 0xFF);
+                  soil_payload[6] = (uint8_t)(soil_VWC >> 8);
+                  soil_payload[7] = (uint8_t)(soil_VWC & 0xFF);
+
+                  LoRaWAN_SendHex(soil_payload, sizeof(soil_payload), 2);
+                }
+        else
+        {
+          payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+          payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+          payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+          payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
+          LoRaWAN_SendHex(payload, 4, 1);
+          // dbg_print_line("TX:done");
+        }
       }
       else
       {
@@ -595,9 +618,9 @@ int main(void)
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -605,19 +628,18 @@ void SystemClock_Config(void)
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Configure LSE Drive Capability
-  */
+   */
   HAL_PWR_EnableBkUpAccess();
   __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
-                              |RCC_OSCILLATORTYPE_MSI;
+   * in the RCC_OscInitTypeDef structure.
+   */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -631,9 +653,8 @@ void SystemClock_Config(void)
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -643,8 +664,7 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_USART2
-                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_RTC;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1 | RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
@@ -655,15 +675,15 @@ void SystemClock_Config(void)
   }
 
   /** Enables the Clock Security System
-  */
+   */
   HAL_RCCEx_EnableLSECSS();
 }
 
 /**
-  * @brief ADC Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC_Init(void)
 {
 
@@ -678,7 +698,7 @@ static void MX_ADC_Init(void)
   /* USER CODE END ADC_Init 1 */
 
   /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
+   */
   hadc.Instance = ADC1;
   hadc.Init.OversamplingMode = DISABLE;
   hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
@@ -702,7 +722,7 @@ static void MX_ADC_Init(void)
   }
 
   /** Configure for the selected ADC regular channel to be converted.
-  */
+   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
   if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
@@ -712,14 +732,13 @@ static void MX_ADC_Init(void)
   /* USER CODE BEGIN ADC_Init 2 */
 
   /* USER CODE END ADC_Init 2 */
-
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C1_Init(void)
 {
 
@@ -745,14 +764,14 @@ static void MX_I2C1_Init(void)
   }
 
   /** Configure Analogue filter
-  */
+   */
   if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
 
   /** Configure Digital filter
-  */
+   */
   if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
   {
     Error_Handler();
@@ -760,14 +779,13 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
-
 }
 
 /**
-  * @brief RTC Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief RTC Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_RTC_Init(void)
 {
 
@@ -780,7 +798,7 @@ static void MX_RTC_Init(void)
   /* USER CODE END RTC_Init 1 */
 
   /** Initialize RTC Only
-  */
+   */
   hrtc.Instance = RTC;
   hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
   hrtc.Init.AsynchPrediv = 127;
@@ -795,7 +813,7 @@ static void MX_RTC_Init(void)
   }
 
   /** Enable the WakeUp
-  */
+   */
   if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
   {
     Error_Handler();
@@ -803,14 +821,13 @@ static void MX_RTC_Init(void)
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
-
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART1_UART_Init(void)
 {
 
@@ -839,14 +856,13 @@ static void MX_USART1_UART_Init(void)
   /* USER CODE BEGIN USART1_Init 2 */
 
   /* USER CODE END USART1_Init 2 */
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
@@ -874,14 +890,13 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
@@ -898,7 +913,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : DBG_LED_Pin */
   GPIO_InitStruct.Pin = DBG_LED_Pin;
@@ -908,7 +923,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(DBG_LED_GPIO_Port, &GPIO_InitStruct);
 
   /*Configure GPIO pins : VBAT_MEAS_EN_Pin I2C_ENABLE_Pin */
-  GPIO_InitStruct.Pin = VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin;
+  GPIO_InitStruct.Pin = VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1070,9 +1085,9 @@ void EnterDeepSleepMode(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -1086,12 +1101,12 @@ void Error_Handler(void)
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */

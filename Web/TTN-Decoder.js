@@ -1,109 +1,98 @@
 function decodeUplink(input) {
   var data = {};
   var warnings = [];
-  var errors = []; // must remain an array
+  var errors = [];
 
-  // Human-readable error map (used by fPort 10, and referenced for 11)
-  var port10Map = {
+  // Calibration: 1413 µS/cm reference / your mean 1706.4
+  const CAL_EC_SCALE = 1413 / 1706.4; // ≈ 0.828303
+
+  const port10Map = {
     0x01: "no sensor detected",
     0x02: "sensor 1 failure",
     0x03: "sensor 2 failure",
-    0x04: "sensor validation failed", // sensors disagree
-    0x05: "humidity validation failed" // humidity sensors disagree
+    0x04: "sensor validation failed",
+    0x05: "humidity validation failed"
   };
 
-  // helper(s)
-  // T2 / legacy temps (no device offset)
-  function toTempC(raw16) {
-    if (raw16 > 32767) raw16 -= 65536;         // int16
-    return raw16 / 100.0;                      // raw is centi-degrees
-  }
-  // T1 temps (device adds +5500; remove it here)
-  function toTempC_T1(raw16) {
-    if (raw16 > 32767) raw16 -= 65536;         // int16
-    return (raw16 - 5500) / 100.0;             // compensate +5500 then scale
-  }
+  function toInt16(u16) { return u16 > 32767 ? u16 - 65536 : u16; }
+  function toTempC(raw16) { return toInt16(raw16) / 100.0; }
+  function toTempC_T1(raw16) { return (toInt16(raw16) - 5500) / 100.0; }
 
   try {
-    // === Port 1: normal packet: T1(2) + H1(2) ===
-    if (input.fPort === 1) {
-      data.error = null;
-
-      if (input.bytes.length < 4) {
-        errors.push("Payload too short on fPort 1 - expected 4+ bytes");
+    // === fPort 2: soil sensor ===
+    if (input.fPort === 2) {
+      if (input.bytes.length < 8) {
+        errors.push("Payload too short on fPort 2 - expected 8 bytes");
         return { data, warnings, errors };
       }
 
-      var t1_raw = (input.bytes[0] << 8) | input.bytes[1];
-      var h1_raw = (input.bytes[2] << 8) | input.bytes[3];
-      data.temperature_c = toTempC_T1(t1_raw);   // T1 uses offset-compensated path
-      data.humidity = h1_raw / 100.0;
+      const e25_raw = (input.bytes[0] << 8) | input.bytes[1]; // ε25 * 100 (unused)
+      const ec_raw  = (input.bytes[2] << 8) | input.bytes[3]; // µS/cm (already)
+      const t_raw   = (input.bytes[4] << 8) | input.bytes[5]; // °C * 100
+      const vwc_raw = (input.bytes[6] << 8) | input.bytes[7]; // % * 10
 
-      if (data.temperature_c < -40 || data.temperature_c > 85) {
-        warnings.push("Temperature out of typical range (-40..85°C)");
-      }
-      if (data.humidity > 100) {
-        warnings.push("Humidity > 100%");
-      }
+      const temperature = +toTempC(t_raw).toFixed(2);
+
+      // EC: µS/cm -> apply calibration -> mS/cm
+      const ec_mS_cm = +((ec_raw * CAL_EC_SCALE) / 1000.0).toFixed(2);
+
+      // Moisture: % with 1 decimal, clamp to 100.0
+      let moisture = +(vwc_raw / 10.0).toFixed(1);
+      if (moisture > 100.0) moisture = 100.0;
+      if (moisture < 0) moisture = 0.0;
+
+      data = {
+        temperature: temperature,
+        moisture: moisture,
+        ec: ec_mS_cm, // mS/cm
+        ph: null
+      };
+
       return { data, warnings, errors };
     }
 
-    // === Port 10: error-only (first byte is code) ===
+    // === fPort 1: ambient ===
+    if (input.fPort === 1) {
+      if (input.bytes.length < 4) {
+        errors.push("Payload too short on fPort 1 - expected 4 bytes");
+        return { data, warnings, errors };
+      }
+      const t1_raw = (input.bytes[0] << 8) | input.bytes[1];
+      const h1_raw = (input.bytes[2] << 8) | input.bytes[3];
+      data.temperature_c = toTempC_T1(t1_raw);
+      data.humidity = h1_raw / 100.0;
+      return { data, warnings, errors };
+    }
+
+    // === fPort 10: error code ===
     if (input.fPort === 10) {
       if (input.bytes.length < 1) {
-        errors.push("Payload too short on fPort 10 - expected ≥1 byte");
+        errors.push("Payload too short on fPort 10");
         return { data, warnings, errors };
       }
-      var code = input.bytes[0] & 0xFF;
-      data.error = port10Map[code] || ("unknown error code: " + code);
+      const code = input.bytes[0] & 0xff;
+      data.error = port10Map[code] || ("unknown error code " + code);
       return { data, warnings, errors };
     }
 
-    // === Port 11: sensors disagree — carry both sensors ===
-    // Layout: T1(2) + H1(2) + T2(2) + H2(2)  => total 8 bytes
+    // === fPort 11: sensors disagree (for completeness) ===
     if (input.fPort === 11) {
       if (input.bytes.length < 8) {
         errors.push("Payload too short on fPort 11 - expected 8 bytes");
         return { data, warnings, errors };
       }
-
-      var t1r = (input.bytes[0] << 8) | input.bytes[1];
-      var h1r = (input.bytes[2] << 8) | input.bytes[3];
-      var t2r = (input.bytes[4] << 8) | input.bytes[5];
-      var h2r = (input.bytes[6] << 8) | input.bytes[7];
-
-      var t1c = toTempC_T1(t1r); // T1 with +5500 compensation
-      var t2c = toTempC(t2r);    // T2 unchanged
-
-      data.error = port10Map[0x04]; // "sensor validation failed"
-      data.temperature1_c = t1c;
+      const t1r = (input.bytes[0] << 8) | input.bytes[1];
+      const h1r = (input.bytes[2] << 8) | input.bytes[3];
+      const t2r = (input.bytes[4] << 8) | input.bytes[5];
+      const h2r = (input.bytes[6] << 8) | input.bytes[7];
+      data.error = port10Map[0x04];
+      data.temperature1_c = toTempC_T1(t1r);
       data.humidity1 = h1r / 100.0;
-      data.temperature2_c = t2c;
+      data.temperature2_c = toTempC(t2r);
       data.humidity2 = h2r / 100.0;
-      data.temp_delta_c = +(Math.abs(t1c - t2c).toFixed(2));
-
-      if (data.humidity1 > 100 || data.humidity2 > 100) warnings.push("Humidity value exceeds 100%");
-      if (t1c < -40 || t1c > 85) warnings.push("Sensor1 temperature out of range");
-      if (t2c < -40 || t2c > 85) warnings.push("Sensor2 temperature out of range");
-
       return { data, warnings, errors };
     }
 
-    // === Default: treat like port 1 ===
-    if (input.bytes.length < 4) {
-      errors.push("Payload too short - expected at least 4 bytes");
-      return { data, warnings, errors };
-    }
-    var temp_raw = (input.bytes[0] << 8) | input.bytes[1];
-    var hum_raw = (input.bytes[2] << 8) | input.bytes[3];
-    data.temperature_c = toTempC_T1(temp_raw);  // default path mirrors fPort 1 (T1)
-    data.humidity = hum_raw / 100.0;
-    if (data.temperature_c < -40 || data.temperature_c > 85) {
-      warnings.push("Temperature out of typical range (-40..85°C)");
-    }
-    if (data.humidity > 100) {
-      warnings.push("Humidity > 100%");
-    }
   } catch (e) {
     errors.push("Error decoding payload: " + e.message);
   }
@@ -111,8 +100,9 @@ function decodeUplink(input) {
   return { data, warnings, errors };
 }
 
-// Legacy TTN decoder
+// TTN legacy wrapper
 function Decoder(bytes, port) {
-  var result = decodeUplink({ bytes: bytes, fPort: port });
+  const result = decodeUplink({ bytes, fPort: port });
   return result.data;
 }
+
