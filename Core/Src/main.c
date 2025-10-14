@@ -244,7 +244,7 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
   __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
   HAL_UART_Transmit(huart, (uint8_t *)"ATI 3001\r\n", 10, 300);
-  HAL_UART_Receive(huart, rxbuf, 7, 100);
+  HAL_UART_Receive(huart, rxbuf, 7, 300);
 
   if (rxbuf[1] == '0')
   {
@@ -303,17 +303,47 @@ int join(UART_HandleTypeDef *huart)
   return 0;
 }
 
-int SendData(UART_HandleTypeDef *huart, char *data)
+int SendData(UART_HandleTypeDef *huart, const char *data)
 {
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(300);
-  //	uint16_t total_rcv = 0;
-  //	int16_t total_expected = 200;
-  //	uint8_t rxbuf[256] = {0};
-  int data_size = strlen(data);
-  HAL_UART_Transmit(&huart2, (uint8_t *)data, data_size, 300);
-  HAL_Delay(100);
-  return 1;
+  if (!huart || !data)
+    return 0;
+
+  // 1) Attention
+  (void)HAL_UART_Transmit(huart, (uint8_t *)"AT\r\n", 4, 300);
+  HAL_Delay(100); // small breath; your module seems to need it
+
+  // 2) Send the command as-is (assumes data already has proper CRLF if needed)
+  size_t data_len = strlen(data);
+  if (data_len == 0)
+    return 0;
+  if (HAL_UART_Transmit(huart, (uint8_t *)data, (uint16_t)data_len, 1000) != HAL_OK)
+  {
+    return 0;
+  }
+
+  // 3) Read response
+  uint8_t rxbuf[256] = {0};
+  int n = uart_recv_until_idle(huart, rxbuf, sizeof(rxbuf), 5000); // overall 5s
+
+  // 4) Parse
+  if (n <= 0)
+  {
+    // No response or timed out – treat as failure
+    return 0;
+  }
+
+  // Typical responses contain lines with "OK" or "ERROR xx"
+  if (strstr((char *)rxbuf, "ERROR"))
+  {
+    // You can log rxbuf to see which error code you got
+    // dbg_print_line((char*)rxbuf);
+    return 0;
+  }
+
+  // If you want to be strict, also require an OK:
+  // if (!strstr((char*)rxbuf, "OK")) return 0;
+
+  return 1; // success (no "ERROR" found)
 }
 
 int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
@@ -399,14 +429,31 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
   HAL_Delay(400);                                          // Giving it enough ttime to wake up
 
   // Set FPort from the function argument (dynamic)
+  uint8_t rxbuf[256] = {0};
+  int total_expected = 60;
+  int total_rcv = 0;
   LoRaWAN_set_fport(fPort);
   HAL_Delay(300);
-
   HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300); // SEND THE DATA!
+  HAL_UART_Receive(&huart2, rxbuf, 4, 100);              // Read IN the OK\r\n
+  __HAL_UART_FLUSH_DRREGISTER(&huart2);
+  __HAL_UART_CLEAR_IDLEFLAG(&huart2);
 
-  // Return to fPort 1, probably not needed, but lets do it anyhow
-  LoRaWAN_set_fport(1);
-  // HAL_Delay(300); // Not sure if i need this
+  while (total_expected > 0)
+  {
+    HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 35000);
+    total_expected -= total_rcv;
+  }
+  __HAL_UART_FLUSH_DRREGISTER(&huart2);
+  __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+
+  if (rxbuf[1] == 'E' || rxbuf[2] == 'R' || rxbuf[3] == 'R')
+  {
+	HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 9, 300);
+	HAL_Delay(400);
+	HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
+	is_connected = 0;
+  }
 }
 
 /* USER CODE END 0 */
@@ -561,19 +608,19 @@ int main(void)
         lorawan_set_battery_level(&huart2, battery);
 
         if (has_soil_sensor)
-                {
-                  uint8_t soil_payload[8] = {0};
-                  soil_payload[0] = (uint8_t)(soil_e25 >> 8);
-                  soil_payload[1] = (uint8_t)(soil_e25 & 0xFF);
-                  soil_payload[2] = (uint8_t)(soil_EC >> 8);
-                  soil_payload[3] = (uint8_t)(soil_EC & 0xFF);
-                  soil_payload[4] = (uint8_t)(soil_temp >> 8);
-                  soil_payload[5] = (uint8_t)(soil_temp & 0xFF);
-                  soil_payload[6] = (uint8_t)(soil_VWC >> 8);
-                  soil_payload[7] = (uint8_t)(soil_VWC & 0xFF);
+        {
+          uint8_t soil_payload[8] = {0};
+          soil_payload[0] = (uint8_t)(soil_e25 >> 8);
+          soil_payload[1] = (uint8_t)(soil_e25 & 0xFF);
+          soil_payload[2] = (uint8_t)(soil_EC >> 8);
+          soil_payload[3] = (uint8_t)(soil_EC & 0xFF);
+          soil_payload[4] = (uint8_t)(soil_temp >> 8);
+          soil_payload[5] = (uint8_t)(soil_temp & 0xFF);
+          soil_payload[6] = (uint8_t)(soil_VWC >> 8);
+          soil_payload[7] = (uint8_t)(soil_VWC & 0xFF);
 
-                  LoRaWAN_SendHex(soil_payload, sizeof(soil_payload), 2);
-                }
+          LoRaWAN_SendHex(soil_payload, sizeof(soil_payload), 2);
+        }
         else
         {
           payload[0] = (uint8_t)(calculated_temp_1 >> 8);
