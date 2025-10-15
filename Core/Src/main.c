@@ -147,6 +147,27 @@ static void uart2_rx_flush(UART_HandleTypeDef *huart)
   __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 }
 
+/* 1) Simple: for NUL-terminated strings */
+static inline bool str_exists(const char *s, const char *token)
+{
+  if (!s || !token || *token == '\0') return false;
+  return strstr(s, token) != NULL;
+}
+
+/* 2) Robust: for binary buffers that may not be NUL-terminated */
+static bool span_exists(const void *buf, size_t len, const char *token)
+{
+  if (!buf || !token) return false;
+  const size_t tlen = strlen(token);
+  if (tlen == 0 || len < tlen) return false;
+
+  const uint8_t *p = (const uint8_t *)buf;
+  for (size_t off = 0; off + tlen <= len; ++off) {
+    if (memcmp(p + off, token, tlen) == 0) return true;
+  }
+  return false;
+}
+
 static int uart2_probe_and_align(void)
 {
   // Try 9600 first, then 115200
@@ -230,33 +251,33 @@ char find_char_after(const char *str, const char *keyword)
   return '\0'; // Not found
 }
 
-int lorawan_is_connected(UART_HandleTypeDef *huart)
-{
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(300); // Let the OK come back
-  uint8_t rxwakebuf[16] = {0};
-  HAL_UART_Receive(huart, rxwakebuf, 4, 300);
-  uint8_t rxbuf[256] = {0};
-  // Totally Flush buffer and stuff
-  HAL_UART_AbortReceive(huart);
-  __HAL_UART_FLUSH_DRREGISTER(huart);
-  __HAL_UART_CLEAR_IDLEFLAG(huart);
-  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
-
-  HAL_UART_Transmit(huart, (uint8_t *)"ATI 3001\r\n", 10, 300);
-  HAL_UART_Receive(huart, rxbuf, 7, 300);
-
-  if (rxbuf[1] == '0')
-  {
-    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-    return 0;
-  }
-  else
-  {
-    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
-    return 1;
-  }
-}
+//int lorawan_is_connected(UART_HandleTypeDef *huart)
+//{
+//  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
+//  HAL_Delay(300); // Let the OK come back
+//  uint8_t rxwakebuf[16] = {0};
+//  HAL_UART_Receive(huart, rxwakebuf, 4, 300);
+//  uint8_t rxbuf[256] = {0};
+//  // Totally Flush buffer and stuff
+//  HAL_UART_AbortReceive(huart);
+//  __HAL_UART_FLUSH_DRREGISTER(huart);
+//  __HAL_UART_CLEAR_IDLEFLAG(huart);
+//  __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+//
+//  HAL_UART_Transmit(huart, (uint8_t *)"ATI 3001\r\n", 10, 300);
+//  HAL_UART_Receive(huart, rxbuf, 7, 300);
+//
+//  if (rxbuf[1] == '0')
+//  {
+//    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
+//    return 0;
+//  }
+//  else
+//  {
+//    memset(rxbuf, 0, sizeof(rxbuf)); // Clear buffer
+//    return 1;
+//  }
+//}
 
 int join(UART_HandleTypeDef *huart)
 {
@@ -303,49 +324,6 @@ int join(UART_HandleTypeDef *huart)
   return 0;
 }
 
-int SendData(UART_HandleTypeDef *huart, const char *data)
-{
-  if (!huart || !data)
-    return 0;
-
-  // 1) Attention
-  (void)HAL_UART_Transmit(huart, (uint8_t *)"AT\r\n", 4, 300);
-  HAL_Delay(100); // small breath; your module seems to need it
-
-  // 2) Send the command as-is (assumes data already has proper CRLF if needed)
-  size_t data_len = strlen(data);
-  if (data_len == 0)
-    return 0;
-  if (HAL_UART_Transmit(huart, (uint8_t *)data, (uint16_t)data_len, 1000) != HAL_OK)
-  {
-    return 0;
-  }
-
-  // 3) Read response
-  uint8_t rxbuf[256] = {0};
-  int n = uart_recv_until_idle(huart, rxbuf, sizeof(rxbuf), 5000); // overall 5s
-
-  // 4) Parse
-  if (n <= 0)
-  {
-    // No response or timed out – treat as failure
-    return 0;
-  }
-
-  // Typical responses contain lines with "OK" or "ERROR xx"
-  if (strstr((char *)rxbuf, "ERROR"))
-  {
-    // You can log rxbuf to see which error code you got
-    // dbg_print_line((char*)rxbuf);
-    return 0;
-  }
-
-  // If you want to be strict, also require an OK:
-  // if (!strstr((char*)rxbuf, "OK")) return 0;
-
-  return 1; // success (no "ERROR" found)
-}
-
 int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level)
 {
   char cmd[32]; // enough space for command
@@ -389,71 +367,96 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
   static const char prefix[] = "AT+SEND \"";
   static const char suffix[] = "\"\r\n";
 
-  if (!payload || length == 0)
-    return;
+  if (!payload || length == 0) return;
 
-  // Max wire size = len*2 hex + 8(prefix) + 3(suffix)
-  // 242B -> 484 + 11 = 495 bytes fits in 512
   static uint8_t txbuf[512];
-
-  const size_t prefix_len = sizeof(prefix) - 1;
-  const size_t suffix_len = sizeof(suffix) - 1;
-  const size_t need = prefix_len + (length * 2u) + suffix_len;
-
-  if (need > sizeof(txbuf))
-  {
-    // Payload too large for our static buffer; don't send a truncated command
-    return;
-  }
+  const size_t need = (sizeof(prefix)-1) + (length*2u) + (sizeof(suffix)-1);
+  if (need > sizeof(txbuf)) return;
 
   size_t idx = 0;
+  for (size_t i = 0; i < sizeof(prefix)-1; ++i) txbuf[idx++] = (uint8_t)prefix[i];
+  for (size_t i = 0; i < length; ++i) { uint8_t b = payload[i]; txbuf[idx++] = (uint8_t)HEX[b>>4]; txbuf[idx++] = (uint8_t)HEX[b&0x0F]; }
+  for (size_t i = 0; i < sizeof(suffix)-1; ++i) txbuf[idx++] = (uint8_t)suffix[i];
 
-  // Copy prefix
-  for (size_t i = 0; i < prefix_len; ++i)
-    txbuf[idx++] = (uint8_t)prefix[i];
+  // Wake
+  (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+  HAL_Delay(200);
 
-  // Hex-encode payload
-  for (size_t i = 0; i < length; ++i)
-  {
-    uint8_t b = payload[i];
-    txbuf[idx++] = (uint8_t)HEX[b >> 4];
-    txbuf[idx++] = (uint8_t)HEX[b & 0x0F];
-  }
-
-  // Copy suffix
-  for (size_t i = 0; i < suffix_len; ++i)
-    txbuf[idx++] = (uint8_t)suffix[i];
-
-  // dbg_print_u32("SEND:len", (uint32_t)length);
-  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // WAKE MODULE!
-  HAL_Delay(400);                                          // Giving it enough ttime to wake up
-
-  // Set FPort from the function argument (dynamic)
-  uint8_t rxbuf[256] = {0};
-  int total_expected = 60;
-  int total_rcv = 0;
+  // Set FPort (optional: verify OK here if you want)
   LoRaWAN_set_fport(fPort);
-  HAL_Delay(300);
-  HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 300); // SEND THE DATA!
-  HAL_UART_Receive(&huart2, rxbuf, 4, 100);              // Read IN the OK\r\n
+  HAL_Delay(150);
+
+  // Clean RX state
+  HAL_UART_AbortReceive(&huart2);
   __HAL_UART_FLUSH_DRREGISTER(&huart2);
   __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+  __HAL_UART_CLEAR_FLAG(&huart2, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
 
-  while (total_expected > 0)
-  {
-    HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 35000);
-    total_expected -= total_rcv;
-  }
-  __HAL_UART_FLUSH_DRREGISTER(&huart2);
-  __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+  // Send payload
+  if (HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 1000) != HAL_OK) return;
 
-  if (rxbuf[1] == 'E' || rxbuf[2] == 'R' || rxbuf[3] == 'R')
-  {
-	HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 9, 300);
-	HAL_Delay(400);
-	HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
-	is_connected = 0;
+  // ----- FIXED RECEIVE LOOP -----
+  uint8_t rxbuf[256] = {0};
+  size_t  total = 0;         // accumulator (write offset)
+  uint16_t last = 0;         // bytes read in the last call
+  uint32_t start = HAL_GetTick();
+  const uint32_t overall_to_ms = 35000;   // your 35s budget
+
+  // Try to catch immediate "OK\r\n"
+  (void)HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf, sizeof(rxbuf), &last, 400);
+  total += last;
+
+  while ((HAL_GetTick() - start) < overall_to_ms) {
+    // Stop if we filled the buffer
+    if (total >= sizeof(rxbuf) - 1) break;
+
+    last = 0;
+    uint16_t cap = (uint16_t)(sizeof(rxbuf) - 1 - total);
+    if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total, cap, &last, 1000) != HAL_OK) {
+      HAL_Delay(20);
+      continue;
+    }
+    if (last == 0) {
+      // idle with no new data -> done
+      break;
+    }
+    total += last;
+
+    // Early exits if we already see decisive tokens
+    rxbuf[total] = 0; // keep NUL-terminated for strstr
+    if (str_exists((char*)rxbuf, "ERROR")) break;
+    if (str_exists((char*)rxbuf, "TX:"))   break;
   }
+  rxbuf[total < sizeof(rxbuf) ? total : sizeof(rxbuf)-1] = 0;
+  // ----- END FIXED RECEIVE LOOP -----
+
+  // If we only saw ADRX so far, give it a short second chance to get TX:
+  if (!str_exists((char*)rxbuf, "TX:") && str_exists((char*)rxbuf, "ADRX:")) {
+    uint16_t extra = 0;
+    if (total < sizeof(rxbuf)-1 &&
+        HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total, (uint16_t)(sizeof(rxbuf)-1-total), &extra, 1200) == HAL_OK &&
+        extra > 0) {
+      total += extra;
+      rxbuf[total] = 0;
+    }
+  }
+
+  // this sucks if this hits.
+  if (str_exists((char*)rxbuf, "ERROR 14")) {
+    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+    HAL_Delay(200);
+    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300); // just start over....
+    is_connected = 0;
+    return;
+  }
+
+  if (str_exists((char*)rxbuf, "TX:")) {
+    // success path (matches your expected frames)
+    return;
+  }
+
+  // Neither ERROR nor TX: harmless log (you can decide to treat ADRX-only as success)
+  // dbg_print_line("SEND:no_TX_no_ERROR");
 }
 
 /* USER CODE END 0 */
@@ -494,6 +497,10 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
+  HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
+  HAL_Delay(300);
+  HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
+  HAL_Delay(300);
   int need_provision = uart2_probe_and_align();
   if (need_provision == 1)
   {
@@ -660,6 +667,8 @@ int main(void)
     }
     // Always go back to deep sleep to allow next RTC wake
     EnterDeepSleepMode();
+
+//    HAL_Delay(60000);
   }
   /* USER CODE END 3 */
 }
