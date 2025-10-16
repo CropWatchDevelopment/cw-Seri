@@ -441,8 +441,12 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
     }
   }
 
-  // this sucks if this hits.
-  if (str_exists((char*)rxbuf, "ERROR 14")) {
+  // Ensure we saw at least one of the expected markers in the raw buffer
+  bool has_tx = span_exists(rxbuf, total, "TX:");
+  bool has_adrx = span_exists(rxbuf, total, "ADRX:");
+  bool has_error = span_exists(rxbuf, total, "ERROR:");
+
+  if ((!has_tx && !has_adrx) || has_error) {
     (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
     HAL_Delay(200);
     (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300); // just start over....
@@ -450,10 +454,23 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
     return;
   }
 
-  if (str_exists((char*)rxbuf, "TX:")) {
-    // success path (matches your expected frames)
-    return;
-  }
+  //
+  return;
+
+//  // this sucks if this hits.
+//  if (str_exists((char*)rxbuf, "ERROR 14")) {
+//    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+//    HAL_Delay(200);
+//    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300); // just start over....
+//    is_connected = 0;
+//    return;
+//  }
+//
+//  //
+//  if (str_exists((char*)rxbuf, "TX:") || str_exists((char*)rxbuf, "ADRX:")) {
+//    // success path (matches your expected frames)
+//    return;
+//  }
 
   // Neither ERROR nor TX: harmless log (you can decide to treat ADRX-only as success)
   // dbg_print_line("SEND:no_TX_no_ERROR");
