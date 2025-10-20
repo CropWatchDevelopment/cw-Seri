@@ -98,6 +98,14 @@ int sensor_init_and_read(void)
         return 4;
     }
 
+    // Compute absolute humidity delta in centi-%RH
+    uint16_t hum_diff = (calculated_hum_1 > calculated_hum_2) ? (calculated_hum_1 - calculated_hum_2) : (calculated_hum_2 - calculated_hum_1);
+
+    // If the difference between the two humidity sensors is greater than 5.00 %RH
+    if (hum_diff > 500) {
+        return 5;  // Custom error for humidity mismatch
+    }
+
     // If you need +55.00 °C offset for transmission, do it here without
     // polluting the stored/calculated values:
     calculated_temp_1 = calculated_temp_1 + 5500;
