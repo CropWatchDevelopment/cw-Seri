@@ -335,10 +335,11 @@ HAL_StatusTypeDef HAL_RCC_DeInit(void)
   */
 HAL_StatusTypeDef HAL_RCC_OscConfig(const RCC_OscInitTypeDef  *RCC_OscInitStruct)
 {
+  HAL_StatusTypeDef status;
   uint32_t tickstart;
   uint32_t hsi_state;
-  HAL_StatusTypeDef status;
-  uint32_t sysclk_source, pll_config;
+  uint32_t sysclk_source;
+  uint32_t pll_config;
 
   /* Check Null pointer */
   if(RCC_OscInitStruct == NULL)

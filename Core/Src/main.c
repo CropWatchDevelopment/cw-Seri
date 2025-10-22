@@ -505,9 +505,9 @@ int main(void)
 }
 
 /**
- * @brief System Clock Configuration
- * @retval None
- */
+  * @brief System Clock Configuration
+  * @retval None
+  */
 void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
@@ -524,11 +524,15 @@ void SystemClock_Config(void)
   __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_LOW);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-   * in the RCC_OscInitTypeDef structure.
-   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE | RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
+                                    |RCC_OSCILLATORTYPE_MSI;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_OFF;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSICalibrationValue = 0;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_5;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
@@ -537,9 +541,10 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-   */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+  /** Initialise the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
@@ -549,19 +554,22 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1 | RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_USART2
+                                      |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_RTC|RCC_PERIPHCLK_LPTIM1;
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
   PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  PeriphClkInit.LptimClockSelection = RCC_LPTIM1CLKSOURCE_HSI;
+
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Enables the Clock Security System
-   */
-  HAL_RCCEx_EnableLSECSS();
+  /** Enables the Clock Security System's interrupt.
+  */
+  HAL_RCCEx_EnableLSECSS_IT();
 }
 
 /* USER CODE BEGIN 4 */
@@ -585,12 +593,13 @@ void configWakeupTime()
  */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
-  /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
+    /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
+    wakeup_counter++;
 
-  wakeup_counter++;
-
-  /* Clear the wake-up timer flag to acknowledge the interrupt */
-  __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc, RTC_FLAG_WUTF);
+    if (NULL != hrtc) {
+        /* Clear the wake-up timer flag to acknowledge the interrupt */
+        __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc, RTC_FLAG_WUTF);
+    }
 }
 
 /**
@@ -740,29 +749,34 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
   * @brief  This function is executed in case of error occurrence.
   * @retval None
   */
-/*
- * @brief  This function is executed in case of error occurrence.
- * @retval None
- */
 void Error_Handler(void)
 {
+#if defined (DEBUG_PHASE)
+    static uint32_t low_ticks = 0uL;
+    static uint32_t high_ticks = 0uL;
+#endif
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* Users can add their own implementation to report the HAL error return state */
   __disable_irq();
-  //  while (1)
-  //  {
-  //  }
+#if defined (DEBUG_PHASE)
+  while (1) {
+      if (++low_ticks == 0uL) { // i.e. an overflow occurred
+          high_ticks++;
+      }
+  }
+#else
   HAL_NVIC_SystemReset();
+#endif
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**
- * @brief  Reports the name of the source file and the source line number
- *         where the assert_param error has occurred.
- * @param  file: pointer to the source file name
- * @param  line: assert_param error line source number
- * @retval None
- */
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
