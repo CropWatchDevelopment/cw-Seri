@@ -71,6 +71,8 @@ static bool first_run = true;                 // Flag to ensure first transmissi
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
+static SysErrorLog_t system_error_log = { 0 };
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -767,6 +769,17 @@ void Error_Handler(void)
   HAL_NVIC_SystemReset();
 #endif
   /* USER CODE END Error_Handler_Debug */
+}
+
+bool Error_Log(SysErrId_t const err_id)
+{
+    if (err_id >= ERROR_OFFSETS) {
+        return false;
+    }
+    else {
+        *((uint32_t*)(&system_error_log + err_id)) += 1uL;
+        return true;
+    }
 }
 #ifdef USE_FULL_ASSERT
 /**

@@ -31,11 +31,37 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+
+typedef enum uart_commands_e {
+    CMD_TOGGLE_LED = 0,
+    CMD_SHORT_BEEP,
+    CMD_LONG_BEEP,
+    CMD_TX_MSG,
+
+    SUPPORTED_UART_COMMANDS
+} UartCmd_t;
+
+typedef enum  system_errors_e {
+    ERROR_OFFSET_TIMEOUTS = 0,
+    ERROR_OFFSET_FUNC_FAILURES,
+    ERROR_OFFSET_SHOULD_NOT_OCCUR,
+    ERROR_OFFSET_GENERIC,
+
+    ERROR_OFFSETS
+} SysErrId_t;
+
+typedef struct system_errors_s {
+    uint32_t timeouts;
+    uint32_t func_failures;
+    uint32_t should_not_occur;
+
+    uint32_t generic;
+} SysErrorLog_t;
 
 /* USER CODE END ET */
 
@@ -53,7 +79,7 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+bool Error_Log(SysErrId_t const err_id);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

@@ -261,13 +261,57 @@ void HealthCheckTaskFunc(void const * argument)
 /* USER CODE END Header_LoRaTxTaskFunc */
 void LoRaTxTaskFunc(void const * argument)
 {
-  /* USER CODE BEGIN LoRaTxTaskFunc */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END LoRaTxTaskFunc */
+    (void)argument; // consider sending a struct with the queue handle and maybe its buffer, size, etc.
+#define QUEUE_ITEM_SIZE sizeof(uint32_t)
+    uint8_t rxData[QUEUE_ITEM_SIZE];
+    /* USER CODE BEGIN LoRaTxTaskFunc */
+    /* Infinite loop */
+    for(;;) {
+        // Block until data is received
+        if (xQueueReceive(LoRaTxQHandle, rxData, portMAX_DELAY) == pdPASS) {
+            // Process received data
+            if (rxData[0] == CMD_TOGGLE_LED) {
+                // toggle Led on PA5.
+            }
+            else if (rxData[0] == CMD_SHORT_BEEP) {
+            }
+            else if (rxData[0] == CMD_LONG_BEEP) {
+            }
+            else if (rxData[0] == CMD_TX_MSG) {
+                // Send the msg over the UART (structs (in a union) must contain the required UART ID, the length and a ptr to the msg.
+                // Once placed for Tx via UART, The UART's TX-callback pushes the TX_Seq# onto a Queue.
+                // The UART's RX-callback is notified by the UART-RX-ISR, which then notifies the LoRaRxTask about an incoming (Rx) msg,
+                // which shall be matched with its corresponding Tx msg. It shall be indicated if an unsolicited response is expected (at any time - async) or not,
+                // so the LoRaRxTask knows whether to wait for further data or not.
+                // Check with Kevin if an \nOK\r is expected only at the end or not.
+            }
+            else if (rxData[1] == CMD_TOGGLE_LED) {
+                // toggle Led on PAx.
+            }
+            else if (rxData[1] == CMD_SHORT_BEEP) {
+            }
+            else if (rxData[1] == CMD_LONG_BEEP) {
+            }
+            else if (rxData[1] == CMD_TX_MSG) {
+            }
+            else if (rxData[2] == CMD_TOGGLE_LED) {
+                // toggle Led on PBx.
+            }
+            else if (rxData[2] == CMD_SHORT_BEEP) {
+            }
+            else if (rxData[2] == CMD_LONG_BEEP) {
+            }
+            else if (rxData[2] == CMD_TX_MSG) {
+            }
+            else ; // do nothing
+            // For example: toggle LED, log, etc.
+        }
+        else {
+            (void)Error_Log(ERROR_OFFSET_FUNC_FAILURES);
+        }
+        osDelay(1);
+    }
+    /* USER CODE END LoRaTxTaskFunc */
 }
 
 /* LoRaReplyTimeout_Cb function */
