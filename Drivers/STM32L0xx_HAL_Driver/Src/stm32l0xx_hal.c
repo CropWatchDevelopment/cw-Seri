@@ -221,9 +221,9 @@ __weak void HAL_MspDeInit(void)
 
 /**
   * @brief This function configures the source of the time base:
-  *        The time source is configured to have 1ms time base with a dedicated
+  *        The time source is configured  to have 1ms time base with a dedicated 
   *        Tick interrupt priority.
-  * @note This function is called automatically at the beginning of program after
+  * @note This function is called  automatically at the beginning of program after
   *       reset by HAL_Init() or at any time when clock is reconfigured  by HAL_RCC_ClockConfig().
   * @note In the default implementation, SysTick timer is the source of time base. 
   *       It is used to generate interrupts at regular time intervals. 

@@ -62,6 +62,8 @@ osStaticMessageQDef_t LoRaTxInfo;
 osMessageQId LoRaRxQHandle;
 uint8_t LoRaRxQBuffer[ 6 * sizeof( uint32_t ) ];
 osStaticMessageQDef_t LoRaRxQInfo;
+osTimerId LoRaReplyTimerHandle;
+osStaticTimerDef_t LoRaReplyTimerControlBlock;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
@@ -71,12 +73,16 @@ osStaticMessageQDef_t LoRaRxQInfo;
 void startupTaskFunc(void const * argument);
 void HealthCheckTaskFunc(void const * argument);
 void LoRaTxTaskFunc(void const * argument);
+void LoRaReplyTimeout_Cb(void const * argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /* GetIdleTaskMemory prototype (linked to static allocation support) */
 void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
 void vApplicationStackOverflowHook( xTaskHandle xTask, signed char *pcTaskName );
+/* GetTimerTaskMemory prototype (linked to static allocation support) */
+void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize );
+
 /* Hook prototypes */
 void vApplicationIdleHook(void);
 void vApplicationTickHook(void);
@@ -138,6 +144,19 @@ void vApplicationStackOverflowHook( xTaskHandle xTask, signed char *pcTaskName )
 }
 /* USER CODE END GET_IDLE_TASK_MEMORY */
 
+/* USER CODE BEGIN GET_TIMER_TASK_MEMORY */
+static StaticTask_t xTimerTaskTCBBuffer;
+static StackType_t xTimerStack[configTIMER_TASK_STACK_DEPTH];
+
+void vApplicationGetTimerTaskMemory( StaticTask_t **ppxTimerTaskTCBBuffer, StackType_t **ppxTimerTaskStackBuffer, uint32_t *pulTimerTaskStackSize )
+{
+  *ppxTimerTaskTCBBuffer = &xTimerTaskTCBBuffer;
+  *ppxTimerTaskStackBuffer = &xTimerStack[0];
+  *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
+  /* place for user code */
+}
+/* USER CODE END GET_TIMER_TASK_MEMORY */
+
 /**
   * @brief  FreeRTOS initialization
   * @param  None
@@ -155,6 +174,11 @@ void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
+
+  /* Create the timer(s) */
+  /* definition and creation of LoRaReplyTimer */
+  osTimerStaticDef(LoRaReplyTimer, LoRaReplyTimeout_Cb, &LoRaReplyTimerControlBlock);
+  LoRaReplyTimerHandle = osTimerCreate(osTimer(LoRaReplyTimer), osTimerOnce, NULL);
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
@@ -244,6 +268,14 @@ void LoRaTxTaskFunc(void const * argument)
     osDelay(1);
   }
   /* USER CODE END LoRaTxTaskFunc */
+}
+
+/* LoRaReplyTimeout_Cb function */
+void LoRaReplyTimeout_Cb(void const * argument)
+{
+  /* USER CODE BEGIN LoRaReplyTimeout_Cb */
+
+  /* USER CODE END LoRaReplyTimeout_Cb */
 }
 
 /* Private application code --------------------------------------------------*/
