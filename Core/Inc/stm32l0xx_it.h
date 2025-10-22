@@ -49,6 +49,7 @@ extern "C" {
 void NMI_Handler(void);
 void HardFault_Handler(void);
 void RTC_IRQHandler(void);
+void LPTIM1_IRQHandler(void);
 void TIM7_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 

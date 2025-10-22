@@ -21,6 +21,7 @@
 #include "cmsis_os.h"
 #include "adc.h"
 #include "i2c.h"
+#include "lptim.h"
 #include "rtc.h"
 #include "usart.h"
 #include "gpio.h"
@@ -349,6 +350,7 @@ int main(void)
   MX_RTC_Init();
   MX_I2C1_Init();
   MX_ADC_Init();
+  MX_LPTIM1_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
