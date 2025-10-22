@@ -76,7 +76,7 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /* GetIdleTaskMemory prototype (linked to static allocation support) */
 void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackType_t **ppxIdleTaskStackBuffer, uint32_t *pulIdleTaskStackSize );
-
+void vApplicationStackOverflowHook( xTaskHandle xTask, signed char *pcTaskName );
 /* Hook prototypes */
 void vApplicationIdleHook(void);
 void vApplicationTickHook(void);
@@ -129,6 +129,12 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackTy
   *ppxIdleTaskStackBuffer = &xIdleStack[0];
   *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
   /* place for user code */
+}
+
+void vApplicationStackOverflowHook( xTaskHandle xTask, signed char *pcTaskName )
+{
+    (void)xTask;
+    (void)pcTaskName;
 }
 /* USER CODE END GET_IDLE_TASK_MEMORY */
 
