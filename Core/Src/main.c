@@ -420,9 +420,8 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    uint16_t ticks;
     __disable_irq();
-    ticks = wakeup_counter;
+    uint16_t ticks = wakeup_counter;
     wakeup_counter = 0;
     __enable_irq();
 
