@@ -47,7 +47,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-static volatile bool read_for_tx = false;
+static volatile bool ready_for_tx = false;
 /* USER CODE END Variables */
 osThreadId startupTaskHandle;
 uint32_t startupTaskBuffer[ 64 ];
@@ -184,12 +184,18 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
+  if (NULL == LoRaReplyTimerHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
   /* USER CODE END RTOS_TIMERS */
 
   /* Create the queue(s) */
   /* definition and creation of LoRaTxQ */
   osMessageQStaticDef(LoRaTxQ, 4, uint32_t, LoRaTxQBuffer, &LoRaTxInfo);
   LoRaTxQHandle = osMessageCreate(osMessageQ(LoRaTxQ), NULL);
+  if (NULL == LoRaTxQHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
 
   /* definition and creation of LoRaRxQ */
   osMessageQStaticDef(LoRaRxQ, 6, uint32_t, LoRaRxQBuffer, &LoRaRxQInfo);
@@ -197,20 +203,32 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  if (NULL == LoRaRxQHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
   /* definition and creation of startupTask */
   osThreadStaticDef(startupTask, startupTaskFunc, osPriorityNormal, 0, 64, startupTaskBuffer, &startupTaskControlBlock);
   startupTaskHandle = osThreadCreate(osThread(startupTask), NULL);
+  if (NULL == startupTaskHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
 
   /* definition and creation of healthCheck */
   osThreadStaticDef(healthCheck, HealthCheckTaskFunc, osPriorityAboveNormal, 0, 64, healthCheckBuffer, &healthCheckControlBlock);
   healthCheckHandle = osThreadCreate(osThread(healthCheck), NULL);
+  if (NULL == healthCheckHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
 
   /* definition and creation of LoRaTx */
   osThreadStaticDef(LoRaTx, LoRaTxTaskFunc, osPriorityHigh, 0, 64, LoRaTxBuffer, &LoRaTxControlBlock);
   LoRaTxHandle = osThreadCreate(osThread(LoRaTx), NULL);
+  if (NULL == LoRaTxHandle) {
+      (void)Error_Log(ERROR_CREATING_OS_COMPONENTS);
+  }
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -232,6 +250,7 @@ void startupTaskFunc(void const * argument)
     uint32_t const one_sec_period = 300;
 
     uint8_t toggle_cmd[sizeof(uint32_t)] = {CMD_TOGGLE_LED, 0x00, 0x00, 0x00};
+#if 0
     static AT_Cmd_t at_command_list[] = {
         [0] = {
             .id = 0u, .unsolicited_response = false, .flag = 0x00,
@@ -242,19 +261,24 @@ void startupTaskFunc(void const * argument)
             .mnemonic = EZURIO_RM126x_GET_DEVICE_NAME_MNEMONIC, .length = EZURIO_RM126x_GET_DEVICE_NAME_LENGTH
         },
     };
+#endif // 0
     while (!initialised) {
         osStatus os_err_code = osTimerStart(LoRaReplyTimerHandle, one_sec_period);
         if (osOK == os_err_code) {
             initialised = true;
         }
         else {
+            (void)Error_Log(ERROR_STARTING_OS_COMPONENTS);
             (void)osDelay(one_sec_period / 10);
         }
     }
+
     /* Infinite loop */
     for(;;) {
-        while (!read_for_tx) {
-            osDelay(1);
+        static uint32_t just_waiting = 0uL;
+        while (!ready_for_tx) {
+            //osDelay(1);
+            just_waiting++;
         }
         // send a command
         /**
@@ -267,7 +291,7 @@ void startupTaskFunc(void const * argument)
         */
         osStatus os_status = osMessagePut (LoRaTxQHandle, (uint32_t)toggle_cmd, 0uL); // send without a timeout
         if (osOK == os_status) {
-            read_for_tx = false;
+            ready_for_tx = false;
         }
         else {
             (void)Error_Log(ERROR_WRITE_TO_Q);
@@ -364,7 +388,7 @@ void LoRaReplyTimeout_Cb(void const * argument)
 {
     /* USER CODE BEGIN LoRaReplyTimeout_Cb */
     (void)argument;
-    read_for_tx = true;
+    ready_for_tx = true;
     /* USER CODE END LoRaReplyTimeout_Cb */
 }
 

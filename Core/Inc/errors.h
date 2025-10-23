@@ -19,6 +19,8 @@ typedef enum  system_errors_e {
     ERROR_TIMEOUTS = 0,
     ERROR_FUNC_FAILURES,
     ERROR_CB_FUNCTION,
+    ERROR_CREATING_OS_COMPONENTS,
+    ERROR_STARTING_OS_COMPONENTS,
     ERROR_READ_FROM_Q,
     ERROR_WRITE_TO_Q,
     ERROR_SHOULD_NOT_OCCUR,
@@ -34,6 +36,8 @@ typedef struct system_errors_s {
     uint32_t timeouts;
     uint32_t func_failures;
     uint32_t cb_failures;
+    uint32_t os_creations;
+    uint32_t os_starts;
     uint32_t qReads;
     uint32_t qWrites;
     uint32_t should_not_occur;
