@@ -353,6 +353,7 @@ int main(void)
   MX_LPTIM1_Init();
   /* USER CODE BEGIN 2 */
 
+#if 0
   HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
   HAL_Delay(350);
 
@@ -403,7 +404,7 @@ int main(void)
   HAL_Delay(350);
   HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
   HAL_Delay(500);
-
+#endif // 0
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
@@ -428,7 +429,7 @@ int main(void)
     __enable_irq();
 
     wakes_accum += ticks;
-
+#if 0
     // dbg_print_u32("Loop:wakes_accum", wakes_accum);
     // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
 
@@ -502,6 +503,7 @@ int main(void)
     }
     // Always go back to deep sleep to allow next RTC wake
     EnterDeepSleepMode();
+#endif // 0
   }
   /* USER CODE END 3 */
 }
