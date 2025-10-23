@@ -25,7 +25,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "ezurio_rm126x_at_cmds.h"
+#include "errors.h"
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +47,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+static volatile bool read_for_tx = false;
 /* USER CODE END Variables */
 osThreadId startupTaskHandle;
 uint32_t startupTaskBuffer[ 64 ];
@@ -178,7 +180,7 @@ void MX_FREERTOS_Init(void) {
   /* Create the timer(s) */
   /* definition and creation of LoRaReplyTimer */
   osTimerStaticDef(LoRaReplyTimer, LoRaReplyTimeout_Cb, &LoRaReplyTimerControlBlock);
-  LoRaReplyTimerHandle = osTimerCreate(osTimer(LoRaReplyTimer), osTimerOnce, NULL);
+  LoRaReplyTimerHandle = osTimerCreate(osTimer(LoRaReplyTimer), osTimerPeriodic, NULL);
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
@@ -225,13 +227,53 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_startupTaskFunc */
 void startupTaskFunc(void const * argument)
 {
-  /* USER CODE BEGIN startupTaskFunc */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END startupTaskFunc */
+    /* USER CODE BEGIN startupTaskFunc */
+    static bool initialised = false;
+    uint32_t const one_sec_period = 300;
+
+    uint8_t toggle_cmd[sizeof(uint32_t)] = {CMD_TOGGLE_LED, 0x00, 0x00, 0x00};
+    static AT_Cmd_t at_command_list[] = {
+        [0] = {
+            .id = 0u, .unsolicited_response = false, .flag = 0x00,
+            .mnemonic = EZURIO_RM126x_ATTENTION_MNEMONIC, .length = EZURIO_RM126x_ATTENTION_LENGTH
+        },
+        [1] = {
+            .id = 0u, .unsolicited_response = false, .flag = 0x00,
+            .mnemonic = EZURIO_RM126x_GET_DEVICE_NAME_MNEMONIC, .length = EZURIO_RM126x_GET_DEVICE_NAME_LENGTH
+        },
+    };
+    while (!initialised) {
+        osStatus os_err_code = osTimerStart(LoRaReplyTimerHandle, one_sec_period);
+        if (osOK == os_err_code) {
+            initialised = true;
+        }
+        else {
+            (void)osDelay(one_sec_period / 10);
+        }
+    }
+    /* Infinite loop */
+    for(;;) {
+        while (!read_for_tx) {
+            osDelay(1);
+        }
+        // send a command
+        /**
+        * @brief Put a Message to a Queue.
+        * @param  queue_id  message queue ID obtained with \ref osMessageCreate.
+        * @param  info      message information.
+        * @param  millisec  timeout value or 0 in case of no time-out.
+        * @retval status code that indicates the execution status of the function.
+        * @note   MUST REMAIN UNCHANGED: \b osMessagePut shall be consistent in every CMSIS-RTOS.
+        */
+        osStatus os_status = osMessagePut (LoRaTxQHandle, (uint32_t)toggle_cmd, 0uL); // send without a timeout
+        if (osOK == os_status) {
+            read_for_tx = false;
+        }
+        else {
+            (void)Error_Log(ERROR_WRITE_TO_Q);
+        }
+    }
+    /* USER CODE END startupTaskFunc */
 }
 
 /* USER CODE BEGIN Header_HealthCheckTaskFunc */
@@ -272,6 +314,7 @@ void LoRaTxTaskFunc(void const * argument)
             // Process received data
             if (rxData[0] == CMD_TOGGLE_LED) {
                 // toggle Led on PA5.
+                HAL_GPIO_TogglePin(DBG_LED_GPIO_Port, DBG_LED_Pin);
             }
             else if (rxData[0] == CMD_SHORT_BEEP) {
             }
@@ -303,11 +346,13 @@ void LoRaTxTaskFunc(void const * argument)
             }
             else if (rxData[2] == CMD_TX_MSG) {
             }
-            else ; // do nothing
+            else {
+                (void)Error_Log(ERROR_UNKNOWN_CMD);
+            }
             // For example: toggle LED, log, etc.
         }
         else {
-            (void)Error_Log(ERROR_OFFSET_FUNC_FAILURES);
+            (void)Error_Log(ERROR_READ_FROM_Q);
         }
         osDelay(1);
     }
@@ -317,9 +362,10 @@ void LoRaTxTaskFunc(void const * argument)
 /* LoRaReplyTimeout_Cb function */
 void LoRaReplyTimeout_Cb(void const * argument)
 {
-  /* USER CODE BEGIN LoRaReplyTimeout_Cb */
-
-  /* USER CODE END LoRaReplyTimeout_Cb */
+    /* USER CODE BEGIN LoRaReplyTimeout_Cb */
+    (void)argument;
+    read_for_tx = true;
+    /* USER CODE END LoRaReplyTimeout_Cb */
 }
 
 /* Private application code --------------------------------------------------*/
