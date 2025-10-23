@@ -46,23 +46,6 @@ typedef enum uart_commands_e {
     SUPPORTED_UART_COMMANDS
 } UartCmd_t;
 
-typedef enum  system_errors_e {
-    ERROR_OFFSET_TIMEOUTS = 0,
-    ERROR_OFFSET_FUNC_FAILURES,
-    ERROR_OFFSET_SHOULD_NOT_OCCUR,
-    ERROR_OFFSET_GENERIC,
-
-    ERROR_OFFSETS
-} SysErrId_t;
-
-typedef struct system_errors_s {
-    uint32_t timeouts;
-    uint32_t func_failures;
-    uint32_t should_not_occur;
-
-    uint32_t generic;
-} SysErrorLog_t;
-
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -79,7 +62,7 @@ typedef struct system_errors_s {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-bool Error_Log(SysErrId_t const err_id);
+
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
