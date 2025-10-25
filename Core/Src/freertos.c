@@ -270,7 +270,7 @@ void startupTaskFunc(void const * argument)
             read_for_tx = false;
         }
         else {
-            (void)Error_Log(ERROR_WRITE_TO_Q);
+            (void)Log_Error(ERROR_WRITE_TO_Q);
         }
     }
     /* USER CODE END startupTaskFunc */
@@ -347,12 +347,12 @@ void LoRaTxTaskFunc(void const * argument)
             else if (rxData[2] == CMD_TX_MSG) {
             }
             else {
-                (void)Error_Log(ERROR_UNKNOWN_CMD);
+                (void)Log_Error(ERROR_UNKNOWN_CMD);
             }
             // For example: toggle LED, log, etc.
         }
         else {
-            (void)Error_Log(ERROR_READ_FROM_Q);
+            (void)Log_Error(ERROR_READ_FROM_Q);
         }
         osDelay(1);
     }
