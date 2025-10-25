@@ -155,5 +155,7 @@ static void osTimerCallback(void const *argument)
 {
     (void)argument;
     (void)Log_Progress(TIMER_EXPIRATION);
+    /* Toggle pin PB1*/
+    HAL_GPIO_TogglePin(DBG_PIN_GPIO_Port, DBG_PIN);
 }
 

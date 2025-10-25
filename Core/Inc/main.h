@@ -75,6 +75,9 @@ void Error_Handler(void);
 #define I2C_ENABLE_Pin GPIO_PIN_5
 #define I2C_ENABLE_GPIO_Port GPIOB
 
+#define DBG_PIN_GPIO_Port GPIOB
+#define DBG_PIN           GPIO_PIN_1
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */
