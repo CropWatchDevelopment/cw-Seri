@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
+#include "logger.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
@@ -26,7 +27,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "ezurio_rm126x_at_cmds.h"
-#include "errors.h"
 #include <stdbool.h>
 /* USER CODE END Includes */
 
