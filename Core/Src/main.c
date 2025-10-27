@@ -352,7 +352,7 @@ int main(void)
   MX_ADC_Init();
   MX_LPTIM1_Init();
   /* USER CODE BEGIN 2 */
-
+#if 0
   HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
   HAL_Delay(350);
 
@@ -403,7 +403,7 @@ int main(void)
   HAL_Delay(350);
   HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
   HAL_Delay(500);
-
+#endif // 0
   /* USER CODE END 2 */
 
   /* Call init function for freertos objects (in cmsis_os2.c) */
