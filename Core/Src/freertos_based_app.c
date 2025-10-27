@@ -85,6 +85,9 @@ void User_FreeRTOS_Init(void)
   /* Create Timer */
   osTimerStaticDef(LEDTimer, osTimerCallback, &TimerControlblock);
   osTimer = osTimerCreate(osTimer(LEDTimer), osTimerPeriodic, NULL);
+  if (NULL == osTimer) {
+      (void)Log_Error(ERROR_CREATING_OS_COMPONENTS);
+  }
 
   return;
 }
