@@ -9,6 +9,7 @@ tmp/*
 *.prefs
 *mkproject
 *.launch
+*[Dd]ebug.launch
 
 .metadata
 # Prerequisites
