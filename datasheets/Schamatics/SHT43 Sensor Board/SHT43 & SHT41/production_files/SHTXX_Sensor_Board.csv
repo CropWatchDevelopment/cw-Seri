@@ -1,0 +1,5 @@
+"Reference","Value","Description","MPN","Footprint","Qty","DNP"
+"C1,C2","1u","CAP CER 1UF 10V X5R 0402","CL05A105KP5NNNC","Capacitor_SMD:C_0402_1005Metric","2",""
+"J1","C239522","1x4P 4P SH 1 1mm 4 Phosphor Bronze SMD,P=1mm,Surface Mount，Right Angle Wire To Board Connector ROHS","A1002WR-S-4P","footprint:SM04B-SRSS-TB_LFSN_","1",""
+"U2","SHT40-CD1B-R3","Digital Humidity and Temperature Sensor, ±1%RH, ±0.1°C, I2C, 1.08-3.6V, 16bit, DFN-4","SHT40-CD1B-R3","footprint_lib:Sensirion_DFN-4_1.5x1.5mm_P0.8mm_SHT4x_NoCentralPad","1",""
+"U3","SHT43-ADCB-R2","Digital Humidity and Temperature Sensor, ±1%RH, ±0.1°C, I2C, 1.08-3.6V, 16bit, DFN-4","SHT43-ADCB-R2","footprint_lib:Sensirion_DFN-4_1.5x1.5mm_P0.8mm_SHT4x_NoCentralPad","1",""
