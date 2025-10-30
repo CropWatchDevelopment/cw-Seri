@@ -43,9 +43,43 @@
 
 #define sensirion_hal_sleep_us sensirion_i2c_hal_sleep_usec
 
-static uint8_t communication_buffer[6] = {0};
+#define TADURI_IMPROVES_SHT4X_DRIVER
 
-static uint8_t _i2c_address;
+enum {
+    MEASURE_HIGH_PRECISION_TICKS_CMD_ID = 0xfd,
+    MEASURE_MEDIUM_PRECISION_TICKS_CMD_ID = 0xf6,
+    MEASURE_LOWEST_PRECISION_TICKS_CMD_ID = 0xe0,
+    ACTIVATE_HIGHEST_HEATER_POWER_LONG_TICKS_CMD_ID = 0x39,
+    ACTIVATE_HIGHEST_HEATER_POWER_SHORT_TICKS_CMD_ID = 0x32,
+    ACTIVATE_MEDIUM_HEATER_POWER_LONG_TICKS_CMD_ID = 0x2f,
+    ACTIVATE_MEDIUM_HEATER_POWER_SHORT_TICKS_CMD_ID = 0x24,
+    ACTIVATE_LOWEST_HEATER_POWER_LONG_TICKS_CMD_ID = 0x1e,
+    ACTIVATE_LOWEST_HEATER_POWER_SHORT_TICKS_CMD_ID = 0x15,
+    SERIAL_NUMBER_CMD_ID = 0x89,
+    SOFT_RESET_CMD_ID = 0x94,
+};
+
+static uint8_t _i2c_address = 0u;
+
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+static int16_t sht4x_send_command_by_id(cmd_offset_t const cmd_offset, uint8_t *const buffer_ptr);
+
+static const uint16_t cmd_lut[SHT4X_I2C_CMD_OFFSETS] = { 10, 5, 2, 1100, 110, 1100, 110, 1100, 110, 10, 10 };
+static const uint8_t delay_lut[SHT4X_I2C_CMD_OFFSETS] = {
+    MEASURE_HIGH_PRECISION_TICKS_CMD_ID,
+    MEASURE_MEDIUM_PRECISION_TICKS_CMD_ID,
+    MEASURE_LOWEST_PRECISION_TICKS_CMD_ID,
+    ACTIVATE_HIGHEST_HEATER_POWER_LONG_TICKS_CMD_ID,
+    ACTIVATE_HIGHEST_HEATER_POWER_SHORT_TICKS_CMD_ID,
+    ACTIVATE_MEDIUM_HEATER_POWER_LONG_TICKS_CMD_ID,
+    ACTIVATE_MEDIUM_HEATER_POWER_SHORT_TICKS_CMD_ID,
+    ACTIVATE_LOWEST_HEATER_POWER_LONG_TICKS_CMD_ID,
+    ACTIVATE_LOWEST_HEATER_POWER_SHORT_TICKS_CMD_ID,
+    SERIAL_NUMBER_CMD_ID,
+    SOFT_RESET_CMD_ID
+};
+
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
 
 void sht4x_init(uint8_t i2c_address) {
     _i2c_address = i2c_address;
@@ -53,11 +87,16 @@ void sht4x_init(uint8_t i2c_address) {
 
 int16_t sht4x_measure_high_precision_ticks(uint16_t* temperature_ticks,
                                            uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(MEASURE_HIGH_PRECISION_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0xfd);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, MEASURE_HIGH_PRECISION_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -70,16 +109,22 @@ int16_t sht4x_measure_high_precision_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t sht4x_measure_medium_precision_ticks(uint16_t* temperature_ticks,
                                              uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(MEASURE_MEDIUM_PRECISION_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0xf6);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, MEASURE_MEDIUM_PRECISION_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -92,16 +137,22 @@ int16_t sht4x_measure_medium_precision_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t sht4x_measure_lowest_precision_ticks(uint16_t* temperature_ticks,
                                              uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(MEASURE_LOWEST_PRECISION_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0xe0);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, MEASURE_LOWEST_PRECISION_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -114,17 +165,23 @@ int16_t sht4x_measure_lowest_precision_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_highest_heater_power_long_ticks(uint16_t* temperature_ticks,
                                                uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_HIGHEST_HEATER_POWER_LONG_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x39);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_HIGHEST_HEATER_POWER_LONG_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -137,17 +194,23 @@ sht4x_activate_highest_heater_power_long_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_highest_heater_power_short_ticks(uint16_t* temperature_ticks,
                                                 uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_HIGHEST_HEATER_POWER_SHORT_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x32);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_HIGHEST_HEATER_POWER_SHORT_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -160,17 +223,23 @@ sht4x_activate_highest_heater_power_short_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_medium_heater_power_long_ticks(uint16_t* temperature_ticks,
                                               uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_MEDIUM_HEATER_POWER_LONG_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x2f);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_MEDIUM_HEATER_POWER_LONG_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -183,17 +252,23 @@ sht4x_activate_medium_heater_power_long_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_medium_heater_power_short_ticks(uint16_t* temperature_ticks,
                                                uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_MEDIUM_HEATER_POWER_SHORT_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x24);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_MEDIUM_HEATER_POWER_SHORT_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -206,17 +281,23 @@ sht4x_activate_medium_heater_power_short_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_lowest_heater_power_long_ticks(uint16_t* temperature_ticks,
                                               uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_LOWEST_HEATER_POWER_LONG_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x1e);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_LOWEST_HEATER_POWER_LONG_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -229,17 +310,23 @@ sht4x_activate_lowest_heater_power_long_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t
 sht4x_activate_lowest_heater_power_short_ticks(uint16_t* temperature_ticks,
                                                uint16_t* humidity_ticks) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(ACTIVATE_LOWEST_HEATER_POWER_SHORT_TICKS_CMD_OFFSET, communication_buffer);
+    *temperature_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[0]);
+    *humidity_ticks = sensirion_common_bytes_to_uint16_t(&communication_buffer[2]);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x15);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, ACTIVATE_LOWEST_HEATER_POWER_SHORT_TICKS_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -252,15 +339,20 @@ sht4x_activate_lowest_heater_power_short_ticks(uint16_t* temperature_ticks,
     }
     *temperature_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[0]);
     *humidity_ticks = sensirion_common_bytes_to_uint16_t(&buffer_ptr[2]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t sht4x_serial_number(uint32_t* serial_number) {
+    uint8_t communication_buffer[6];
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    int16_t local_error = sht4x_send_command_by_id(SERIAL_NUMBER_CMD_OFFSET, communication_buffer);
+    *serial_number = sensirion_common_bytes_to_uint32_t(communication_buffer);
+#else
     int16_t local_error = NO_ERROR;
-    uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x89);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, SERIAL_NUMBER_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
     if (local_error != NO_ERROR) {
@@ -272,20 +364,49 @@ int16_t sht4x_serial_number(uint32_t* serial_number) {
         return local_error;
     }
     *serial_number = sensirion_common_bytes_to_uint32_t(&buffer_ptr[0]);
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
     return local_error;
 }
 
 int16_t sht4x_soft_reset() {
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+    uint8_t communication_buffer[6];
+    return sht4x_send_command_by_id(SOFT_RESET_CMD_OFFSET, communication_buffer);
+#else
     int16_t local_error = NO_ERROR;
     uint8_t* buffer_ptr = communication_buffer;
     uint16_t local_offset = 0;
     local_offset =
-        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, 0x94);
+        sensirion_i2c_add_command8_to_buffer(buffer_ptr, local_offset, SOFT_RESET_CMD_ID);
     local_error =
         sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
-    if (local_error != NO_ERROR) {
-        return local_error;
+    if (NO_ERROR == local_error) {
+        sensirion_i2c_hal_sleep_usec(10 * 1000);
     }
-    sensirion_i2c_hal_sleep_usec(10 * 1000);
     return local_error;
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */
 }
+
+#if defined (TADURI_IMPROVES_SHT4X_DRIVER)
+static inline int16_t sht4x_send_command_by_id(cmd_offset_t const cmd_offset, uint8_t *const buffer_ptr)
+{
+    if (0u == _i2c_address) {
+        return NOT_INITIALIZED;
+    }
+    else if (cmd_offset < SHT4X_I2C_CMD_OFFSETS) {
+        uint16_t local_offset =
+            sensirion_i2c_add_command8_to_buffer(buffer_ptr, /*offset*/0u, cmd_lut[cmd_offset]);
+        int16_t local_error =
+            sensirion_i2c_write_data(_i2c_address, buffer_ptr, local_offset);
+        if (local_error == NO_ERROR) {
+            sensirion_i2c_hal_sleep_usec(delay_lut[cmd_offset] * 1000);
+            if (SOFT_RESET_CMD_ID != cmd_lut[cmd_offset]) {
+                local_error = sensirion_i2c_read_data_inplace(_i2c_address, buffer_ptr, 4);
+            }
+        }
+        return local_error;
+    } else {
+        return NOT_IMPLEMENTED_ERROR;
+    }
+}
+#endif /* TADURI_IMPROVES_SHT4X_DRIVER */

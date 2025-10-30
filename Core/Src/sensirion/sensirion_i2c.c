@@ -253,22 +253,20 @@ uint16_t sensirion_i2c_add_float_to_buffer(uint8_t* buffer, uint16_t offset,
 uint16_t sensirion_i2c_add_bytes_to_buffer(uint8_t* buffer, uint16_t offset,
                                            const uint8_t* data,
                                            uint16_t data_length) {
-    uint16_t i;
-
     if (data_length % SENSIRION_WORD_SIZE != 0) {
         return BYTE_NUM_ERROR;
     }
+    else {
+        for (uint16_t i = 0; i < data_length; i += 2) {
+            buffer[offset++] = data[i];
+            buffer[offset++] = data[i + 1];
 
-    for (i = 0; i < data_length; i += 2) {
-        buffer[offset++] = data[i];
-        buffer[offset++] = data[i + 1];
-
-        buffer[offset] = sensirion_i2c_generate_crc(
-            &buffer[offset - SENSIRION_WORD_SIZE], SENSIRION_WORD_SIZE);
-        offset++;
+            buffer[offset] = sensirion_i2c_generate_crc(
+                &buffer[offset - SENSIRION_WORD_SIZE], SENSIRION_WORD_SIZE);
+            offset++;
+        }
+        return offset;
     }
-
-    return offset;
 }
 
 int16_t sensirion_i2c_write_data(uint8_t address, const uint8_t* data,
@@ -278,8 +276,6 @@ int16_t sensirion_i2c_write_data(uint8_t address, const uint8_t* data,
 
 int16_t sensirion_i2c_read_data_inplace(uint8_t address, uint8_t* buffer,
                                         uint16_t expected_data_length) {
-    int16_t error;
-    uint16_t i, j;
     uint16_t size = (expected_data_length / SENSIRION_WORD_SIZE) *
                     (SENSIRION_WORD_SIZE + CRC8_LEN);
 
@@ -287,21 +283,24 @@ int16_t sensirion_i2c_read_data_inplace(uint8_t address, uint8_t* buffer,
         return BYTE_NUM_ERROR;
     }
 
-    error = sensirion_i2c_hal_read(address, buffer, size);
+    int16_t error = sensirion_i2c_hal_read(address, buffer, size);
     if (error) {
         return error;
     }
+    else {
+        uint16_t i = 0u, j = 0u;
 
-    for (i = 0, j = 0; i < size; i += SENSIRION_WORD_SIZE + CRC8_LEN) {
+        for (; i < size; i += SENSIRION_WORD_SIZE + CRC8_LEN) {
 
-        error = sensirion_i2c_check_crc(&buffer[i], SENSIRION_WORD_SIZE,
-                                        buffer[i + SENSIRION_WORD_SIZE]);
-        if (error) {
-            return error;
+            error = sensirion_i2c_check_crc(&buffer[i], SENSIRION_WORD_SIZE,
+                                            buffer[i + SENSIRION_WORD_SIZE]);
+            if (error) {
+                return error;
+            }
+            buffer[j++] = buffer[i];
+            buffer[j++] = buffer[i + 1];
         }
-        buffer[j++] = buffer[i];
-        buffer[j++] = buffer[i + 1];
-    }
 
-    return NO_ERROR;
+        return NO_ERROR;
+    }
 }

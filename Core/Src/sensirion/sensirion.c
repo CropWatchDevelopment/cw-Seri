@@ -28,36 +28,25 @@ uint16_t sht4x_rh_centi_from_ticks(uint16_t rh_ticks) {
 }
 
 // Variable definitions (declared as extern in the header)
-bool     has_sensor_1 = false;
-bool     has_sensor_2 = false;
-uint16_t temp_ticks_1 = 0;
-uint16_t hum_ticks_1  = 0;
-uint16_t temp_ticks_2 = 0;
-uint16_t hum_ticks_2  = 0;
-
-// Converted, centi-units: temperature in °C×100, humidity in %×100
-int16_t  calculated_temp_1;   // e.g., 2345 => 23.45 °C
-uint16_t calculated_hum_1;    // e.g.,  5678 => 56.78 %RH
-
-int16_t  calculated_temp_2;
-uint16_t calculated_hum_2;
-
-int16_t i2c_error_code = 0;
+bool     sensor_1_is_present;
+bool     sensor_2_is_present;
 
 void scan_i2c_bus(void)
 {
-    // re-set these to false because we want to check every time for safety
-    has_sensor_1 = false;
-    has_sensor_2 = false;
-
-    if (HAL_I2C_IsDeviceReady(&hi2c1, 0x44 << 1, 1, 10) == HAL_OK) has_sensor_1 = true;
-    if (HAL_I2C_IsDeviceReady(&hi2c1, 0x46 << 1, 1, 10) == HAL_OK) has_sensor_2 = true;
+    sensor_1_is_present = (HAL_I2C_IsDeviceReady(&hi2c1, (SHT43_I2C_ADDR_44 << 1), 1/*trial*/, 10/*msec timeout*/) == HAL_OK);
+    sensor_2_is_present = (HAL_I2C_IsDeviceReady(&hi2c1, (SHT40_I2C_ADDR_46 << 1), 1/*trial*/, 10/*msec timeout*/) == HAL_OK);
 }
 
 int sensor_init_and_read(void)
 {
+    int16_t  i2c_error_code;
+    uint16_t temp_ticks_1 = 0u;
+    uint16_t hum_ticks_1  = 0u;
+    uint16_t temp_ticks_2 = 0u;
+    uint16_t hum_ticks_2  = 0u;
+
     // If either sensor is missing => error
-    if (!has_sensor_1 || !has_sensor_2) {
+    if (!sensor_1_is_present || !sensor_2_is_present) {
         i2c_error_code = NO_SENSORS_FOUND;
         return 1; // sensor 1 or 2 not found
     }
@@ -65,29 +54,31 @@ int sensor_init_and_read(void)
     i2c_error_code = NO_ERROR;
     HAL_Delay(100);
 
-    if (has_sensor_1) {
+    if (sensor_1_is_present) {
         sht4x_init(SHT43_I2C_ADDR_44);
         sht4x_soft_reset();
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT43_I2C_ADDR_44);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_1, &hum_ticks_1);
-        if (i2c_error_code) return 2; // hard fault on read
+        if (i2c_error_code) return HARD_FAULT_ON_SENSOR_NO_1_READ;
     }
 
-    if (has_sensor_2) {
+    if (sensor_2_is_present) {
         sht4x_init(SHT40_I2C_ADDR_46);
         sht4x_soft_reset();
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT40_I2C_ADDR_46);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2);
-        if (i2c_error_code) return 3; // hard fault on read
+        if (i2c_error_code) return HARD_FAULT_ON_SENSOR_NO_2_READ;
     }
 
+    // Converted, centi-units: temperature in °C×100, humidity in %×100
+
     // Convert using exact integer math with rounding (centi-units)
-    calculated_temp_1 = sht4x_temp_centi_from_ticks(temp_ticks_1);  // °C×100
-    calculated_temp_2 = sht4x_temp_centi_from_ticks(temp_ticks_2);  // °C×100
-    calculated_hum_1  = sht4x_rh_centi_from_ticks(hum_ticks_1);     // %×100
-    calculated_hum_2  = sht4x_rh_centi_from_ticks(hum_ticks_2);     // %×100
+    int16_t  calculated_temp_1 = sht4x_temp_centi_from_ticks(temp_ticks_1);  // °C×100, e.g., 2345 => 23.45 °C
+    int16_t calculated_temp_2 = sht4x_temp_centi_from_ticks(temp_ticks_2);   // °C×100
+    uint16_t calculated_hum_1  = sht4x_rh_centi_from_ticks(hum_ticks_1);     // %×100, e.g., 5678 => 56.78 %RH
+    uint16_t calculated_hum_2  = sht4x_rh_centi_from_ticks(hum_ticks_2);     // %×100
 
     // Compute absolute temperature delta in centi-degrees
     int16_t temp_diff  = (int16_t)(calculated_temp_1 - calculated_temp_2);
@@ -95,7 +86,7 @@ int sensor_init_and_read(void)
 
     // If the difference between the two temp sensors is greater than 5.00 °C
     if (temp_delta > 500) {
-        return 4;
+        return DIFF_BETWEEN_TEMPERATURE_READS_EXCEEDS_5C;
     }
 
     // Compute absolute humidity delta in centi-%RH
@@ -103,7 +94,7 @@ int sensor_init_and_read(void)
 
     // If the difference between the two humidity sensors is greater than 5.00 %RH
     if (hum_diff > 500) {
-        return 5;  // Custom error for humidity mismatch
+        return CUSTOM_ERROR_FOR_HUMIDITY_READS_MISMATCH;
     }
 
     // If you need +55.00 °C offset for transmission, do it here without
@@ -111,8 +102,5 @@ int sensor_init_and_read(void)
     calculated_temp_1 = calculated_temp_1 + 5500;
     // (use tx_temp_* to build your payload)
 
-    if (i2c_error_code) {
-        return 1;
-    }
-    return 0;
+    return (bool)(i2c_error_code);
 }

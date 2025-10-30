@@ -33,5 +33,6 @@ void sensirion_i2c_hal_sleep_usec(uint32_t useconds) {
     if (HAL_GetHalVersion() < 0x01010100) {
         msec++;
     }
+#warning:"Consider #ifdef'ing to replace HAL_Delay() with an RTOS vTaskDelay() or similar."
     HAL_Delay(msec);
 }
