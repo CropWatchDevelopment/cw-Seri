@@ -26,7 +26,7 @@
  *  
  *----------------------------------------------------------------------------
  *
- * Portions Copyright © 2016 STMicroelectronics International N.V. All rights reserved.
+ * Portions Copyright ï¿½ 2016 STMicroelectronics International N.V. All rights reserved.
  * Portions Copyright (c) 2013 ARM LIMITED
  * All rights reserved.
  * Redistribution and use in source and binary forms, with or without
@@ -258,6 +258,7 @@ osStatus osThreadTerminate (osThreadId thread_id)
   vTaskDelete(thread_id);
   return osOK;
 #else
+  (void)thread_id;
   return osErrorOS;
 #endif
 }
@@ -923,6 +924,7 @@ osPoolId osPoolCreate (const osPoolDef_t *pool_def)
   return thePool;
  
 #else
+  (void)pool_def;
   return NULL;
 #endif
 }
@@ -1200,6 +1202,8 @@ osMailQId osMailCreate (const osMailQDef_t *queue_def, osThreadId thread_id)
   
   return *(queue_def->cb);
 #else
+  (void)queue_def;
+  (void)thread_id;
   return NULL;
 #endif
 }
@@ -1543,6 +1547,7 @@ osStatus osThreadList (uint8_t *buffer)
 #if ( ( configUSE_TRACE_FACILITY == 1 ) && ( configUSE_STATS_FORMATTING_FUNCTIONS == 1 ) )
   vTaskList((char *)buffer);
 #endif
+  (void)buffer;
   return osOK;
 }
 
@@ -1652,6 +1657,7 @@ osMutexId osRecursiveMutexCreate (const osMutexDef_t *mutex_def)
   return xSemaphoreCreateRecursiveMutex();
 #endif
 #else
+  (void)mutex_def;
   return NULL;
 #endif	
 }
@@ -1672,7 +1678,8 @@ osStatus osRecursiveMutexRelease (osMutexId mutex_id)
   }
   return result;
 #else
-	return osErrorResource;
+    (void)mutex_id;
+    return osErrorResource;
 #endif
 }
 
@@ -1712,7 +1719,9 @@ osStatus osRecursiveMutexWait (osMutexId mutex_id, uint32_t millisec)
   }
   return osOK;
 #else
-	return osErrorResource;
+    (void)mutex_id;
+    (void)millisec;
+    return osErrorResource;
 #endif
 }
 
