@@ -410,6 +410,7 @@ static bool Uart_Transmitter(UART_HandleTypeDef *const huart, uint8_t const * co
   */
 static bool Uart_StartTransmission(UartId_t uart_id, UART_HandleTypeDef *const huart, uint8_t const * const data_p, uint16_t length)
 {
+    (void)huart;
     // When debugging with breakpoints, in most cases the UART Tx ISR will be called due to an empty tx buffer before we even get here.
     uart_jobs[uart_id].status = UART_JOB_TX_IN_PROGRESS;
 
