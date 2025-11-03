@@ -88,14 +88,11 @@ int sensor_init_and_read(void)
     if (temp_delta > 500) {
         return DIFF_BETWEEN_TEMPERATURE_READS_EXCEEDS_5C;
     }
-
-    // Compute absolute humidity delta in centi-%RH
-    uint16_t hum_diff = (calculated_hum_1 > calculated_hum_2) ? (calculated_hum_1 - calculated_hum_2) : (calculated_hum_2 - calculated_hum_1);
-
-    // If you need +55.00 °C offset for transmission, do it here without
-    // polluting the stored/calculated values:
-    calculated_temp_1 = calculated_temp_1 + 5500;
-    // (use tx_temp_* to build your payload)
-
-    return (bool)(i2c_error_code);
+    else {
+        // If you need +55.00 °C offset for transmission, do it here without
+        // polluting the stored/calculated values:
+        calculated_temp_1 = calculated_temp_1 + 5500;
+        // (use tx_temp_* to build your payload)
+        return NO_ERROR;
+    }
 }

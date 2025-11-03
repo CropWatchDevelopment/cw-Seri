@@ -9,6 +9,12 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 
+#define NO_ERROR (0)
+#define NO_SENSORS_FOUND (1)
+#define HARD_FAULT_ON_SENSOR_NO_1_READ (2)
+#define HARD_FAULT_ON_SENSOR_NO_2_READ (3)
+#define DIFF_BETWEEN_TEMPERATURE_READS_EXCEEDS_5C (4)
+
 // Converted values (centi-units):
 //  - Temperature: °C × 100  (e.g., 2345 => 23.45 °C)
 //  - Humidity:    %RH × 100 (e.g., 5678 => 56.78 %RH)
