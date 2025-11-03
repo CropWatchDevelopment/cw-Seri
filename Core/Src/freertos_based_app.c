@@ -66,27 +66,27 @@ void User_FreeRTOS_Init(void)
   osMessageQStaticDef(osqueue, CONS_PROD_QUEUE_DEPTH, uint32_t, osQueueBuffer, &osQueueCtrlBlock);
   osQueue = osMessageCreate(osMessageQ(osqueue), NULL);
   if (NULL == osQueue) {
-      (void)Log_Error(ERROR_CREATING_OS_COMPONENTS);
+      (void)LOG_ERROR_DETAILS(ERROR_CREATING_OS_COMPONENTS);
   }
 
   /* Note that the producer has a lower priority than the consumer when the tasks are spawned. */
   osThreadStaticDef(QCons, MessageQueueConsumer, osPriorityBelowNormal, 0, blckqSTACK_SIZE, QconsumerTaskBuffer, &QconsumerTaskControlBlock);
   QconsumerTaskHandle = osThreadCreate(osThread(QCons), NULL);
   if (NULL == QconsumerTaskHandle) {
-      (void)Log_Error(ERROR_CREATING_OS_COMPONENTS);
+      (void)LOG_ERROR_DETAILS(ERROR_CREATING_OS_COMPONENTS);
   }
 
   osThreadStaticDef(QProd, MessageQueueProducer, osPriorityLow, 0, blckqSTACK_SIZE, QproducerTaskBuffer, &QproducerTaskControlBlock);
   QproducerTaskHandle = osThreadCreate(osThread(QProd), NULL);
   if (NULL == QproducerTaskHandle) {
-      (void)Log_Error(ERROR_CREATING_OS_COMPONENTS);
+      (void)LOG_ERROR_DETAILS(ERROR_CREATING_OS_COMPONENTS);
   }
 
   /* Create Timer */
   osTimerStaticDef(LEDTimer, osTimerCallback, &TimerControlblock);
   osTimer = osTimerCreate(osTimer(LEDTimer), osTimerPeriodic, NULL);
   if (NULL == osTimer) {
-      (void)Log_Error(ERROR_CREATING_OS_COMPONENTS);
+      (void)LOG_ERROR_DETAILS(ERROR_CREATING_OS_COMPONENTS);
   }
 
   return;
@@ -117,10 +117,10 @@ static void MessageQueueProducer(const void *argument)
 
             if ((ProducerValue % 10) == 0) {
                 if (osOK != osTimerStart(osTimer, 200)) {
-                    (void)Log_Error(ERROR_STARTING_OS_COMPONENTS);
+                    (void)LOG_ERROR_DETAILS(ERROR_STARTING_OS_COMPONENTS);
                 }
                 else {
-                    (void)Log_Progress(TIMER_STARTS);
+                    (void)LOG_Progress(TIMER_STARTS);
                 }
             }
 
