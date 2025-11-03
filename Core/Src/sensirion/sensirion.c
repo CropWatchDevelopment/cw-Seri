@@ -31,7 +31,7 @@ uint16_t sht4x_rh_centi_from_ticks(uint16_t rh_ticks) {
 bool sensor_1_is_present;
 bool sensor_2_is_present;
 
-void scan_i2c_bus(void)
+void check_sensor_presence(void)
 {
     sensor_1_is_present = (HAL_I2C_IsDeviceReady(&hi2c1, (SHT43_I2C_ADDR_44 << 1), 1/*trial*/, 10/*msec timeout*/) == HAL_OK);
     sensor_2_is_present = (HAL_I2C_IsDeviceReady(&hi2c1, (SHT40_I2C_ADDR_46 << 1), 1/*trial*/, 10/*msec timeout*/) == HAL_OK);
@@ -48,7 +48,7 @@ int sensor_init_and_read(void)
     // If either sensor is missing => error
     if (!sensor_1_is_present || !sensor_2_is_present) {
         i2c_error_code = NO_SENSORS_FOUND;
-        return 1; // sensor 1 or 2 not found
+        return NO_SENSORS_FOUND;
     }
 
     i2c_error_code = NO_ERROR;
@@ -91,11 +91,6 @@ int sensor_init_and_read(void)
 
     // Compute absolute humidity delta in centi-%RH
     uint16_t hum_diff = (calculated_hum_1 > calculated_hum_2) ? (calculated_hum_1 - calculated_hum_2) : (calculated_hum_2 - calculated_hum_1);
-
-    // If the difference between the two humidity sensors is greater than 5.00 %RH
-    if (hum_diff > 500) {
-        return CUSTOM_ERROR_FOR_HUMIDITY_READS_MISMATCH;
-    }
 
     // If you need +55.00 °C offset for transmission, do it here without
     // polluting the stored/calculated values:

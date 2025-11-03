@@ -24,12 +24,12 @@ extern "C" {
 //extern uint16_t hum_ticks_2;
 
 // Sensor presence flags and I2C error code
-extern bool     sensor_1_is_present;
-extern bool     sensor_2_is_present;
-extern int16_t  i2c_error_code;
+//extern bool     sensor_1_is_present;
+//extern bool     sensor_2_is_present;
+//extern int16_t  i2c_error_code;
 
 // Public API
-void scan_i2c_bus(void);
+void check_sensor_presence(void);
 int  sensor_init_and_read(void);
 
 // Conversion helpers (exported)

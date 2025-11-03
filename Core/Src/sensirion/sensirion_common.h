@@ -38,25 +38,23 @@
 extern "C" {
 #endif
 
-#define NO_ERROR           (0)
-#define NO_SENSORS_FOUND   (1)
-#define HARD_FAULT_ON_SENSOR_NO_1_READ (2)
-#define HARD_FAULT_ON_SENSOR_NO_2_READ (3)
+#define NO_ERROR                                  (0)
+#define NO_SENSORS_FOUND                          (1)
+#define HARD_FAULT_ON_SENSOR_NO_1_READ            (2)
+#define HARD_FAULT_ON_SENSOR_NO_2_READ            (3)
 #define DIFF_BETWEEN_TEMPERATURE_READS_EXCEEDS_5C (4)
-#define CUSTOM_ERROR_FOR_HUMIDITY_READS_MISMATCH (5)
 
-
-#define NOT_IMPLEMENTED_ERROR 31
-#define NOT_INITIALIZED 0xFE
+#define NOT_IMPLEMENTED_ERROR                    (31)
+#define NOT_INITIALIZED                        (0xFE)
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof(*(x)))
 #endif
 
-#define SENSIRION_COMMAND_SIZE 2
-#define SENSIRION_WORD_SIZE 2
-#define SENSIRION_NUM_WORDS(x) (sizeof(x) / SENSIRION_WORD_SIZE)
-#define SENSIRION_MAX_BUFFER_WORDS 32
+#define SENSIRION_COMMAND_SIZE     (2)
+#define SENSIRION_WORD_SIZE        (2)
+#define SENSIRION_NUM_WORDS(x)     (sizeof(x) / SENSIRION_WORD_SIZE)
+#define SENSIRION_MAX_BUFFER_WORDS (32)
 
 /**
  * sensirion_common_bytes_to_int16_t() - Convert an array of bytes to an int16_t
