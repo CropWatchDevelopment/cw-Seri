@@ -103,6 +103,8 @@ void User_FreeRTOS_Init(void)
   */
 static void MessageQueueProducer(const void *argument)
 {
+    (void)argument;
+
     for (;;) {
         if (osMessagePut(osQueue, ProducerValue, 100) != osOK) {
             /* Switch On continuously LED2 to indicate error */
@@ -136,6 +138,7 @@ static void MessageQueueProducer(const void *argument)
 static void MessageQueueConsumer(const void *argument)
 {
     osEvent event;
+    (void)argument;
 
     for (;;) {
         /* Get the message from the queue */

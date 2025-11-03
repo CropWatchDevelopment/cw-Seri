@@ -178,8 +178,8 @@ int lorawan_is_connected(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
-  if (is_connected)
-  {
+    (void)huart;
+  if (is_connected) {
     dbg_print_line("JOIN:skip");
     return 1;
   }
@@ -222,6 +222,7 @@ int join(UART_HandleTypeDef *huart)
 
 int SendData(UART_HandleTypeDef *huart, char* data)
 {
+    (void)huart;
     HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
     HAL_Delay(300);
     //uint16_t total_rcv = 0;

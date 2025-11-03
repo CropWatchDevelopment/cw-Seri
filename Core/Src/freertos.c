@@ -97,11 +97,13 @@ __weak void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTask
 /* USER CODE BEGIN PREPOSTSLEEP */
 __weak void PreSleepProcessing(uint32_t *ulExpectedIdleTime)
 {
+    (void)ulExpectedIdleTime;
 /* place for user code */
 }
 
 __weak void PostSleepProcessing(uint32_t *ulExpectedIdleTime)
 {
+    (void)ulExpectedIdleTime;
 /* place for user code */
 }
 /* USER CODE END PREPOSTSLEEP */
