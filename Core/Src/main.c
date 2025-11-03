@@ -259,7 +259,7 @@ int SendData(UART_HandleTypeDef *huart, char* data)
         00000032 32 32 30 30 30 30 30 30   48 7a 2c 20 44 52 3a 35     22000000  Hz, DR:5
         00000048 0d                                                    ␍
 
-        ----Sample Response WITH data comin' back, the data should be: EE EE EE EE
+        ----Sample Response WITH data coming back, the data should be: EE EE EE EE
         00000000 0a 4f 4b 0d 0a 41 44 52   58 3a 20 44 52 3a 5b 78     ␊OK␍␊ADR  X: DR:[x
         00000016 5d 20 35 2c 20 50 4f 3a   5b 76 5d 20 38 2c 20 4e     ] 5, PO:  [v] 8, N
         00000032 42 3a 5b 78 5d 20 31 2c   20 43 50 3a 5b 78 5d 20     B:[x] 1,   CP:[x]

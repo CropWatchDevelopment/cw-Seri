@@ -2,7 +2,7 @@
  * freertos_based_app.c
  *
  *  Created on: Oct 24, 2025
- *      Author: taduri.fwdev@outlook.com
+ *  Authors: taduri.fwdev@outlook.com
  */
 
 /* Includes ------------------------------------------------------------------*/
@@ -160,7 +160,7 @@ static void MessageQueueConsumer(const void *argument)
 static void osTimerCallback(void const *argument)
 {
     (void)argument;
-    (void)Log_Progress(TIMER_EXPIRATION);
+    //(void)LOG_Progress(TIMER_EXPIRATION);
     /* Toggle pin PB1*/
     HAL_GPIO_TogglePin(DBG_PIN_GPIO_Port, DBG_PIN);
 }

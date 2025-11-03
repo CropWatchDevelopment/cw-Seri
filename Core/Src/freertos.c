@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
+
 #include "logger.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -88,7 +89,7 @@ __weak void vApplicationStackOverflowHook(xTaskHandle xTask, signed char *pcTask
     {
         (void)pcTaskName;
         if (NULL == xTask) {
-            (void)Log_Error(ERROR_STACK_OVERFLOW);
+            Error_Handler();
         }
     }
 }

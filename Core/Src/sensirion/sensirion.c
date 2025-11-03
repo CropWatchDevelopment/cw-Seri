@@ -28,8 +28,8 @@ uint16_t sht4x_rh_centi_from_ticks(uint16_t rh_ticks) {
 }
 
 // Variable definitions (declared as extern in the header)
-bool     sensor_1_is_present;
-bool     sensor_2_is_present;
+bool sensor_1_is_present;
+bool sensor_2_is_present;
 
 void scan_i2c_bus(void)
 {
@@ -57,7 +57,7 @@ int sensor_init_and_read(void)
     if (sensor_1_is_present) {
         sht4x_init(SHT43_I2C_ADDR_44);
         sht4x_soft_reset();
-        sensirion_i2c_hal_sleep_usec(10000);
+        sensirion_i2c_hal_sleep_usec(10000); // 10mSec
         sht4x_init(SHT43_I2C_ADDR_44);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_1, &hum_ticks_1);
         if (i2c_error_code) return HARD_FAULT_ON_SENSOR_NO_1_READ;
@@ -66,7 +66,7 @@ int sensor_init_and_read(void)
     if (sensor_2_is_present) {
         sht4x_init(SHT40_I2C_ADDR_46);
         sht4x_soft_reset();
-        sensirion_i2c_hal_sleep_usec(10000);
+        sensirion_i2c_hal_sleep_usec(10000); // 10mSec
         sht4x_init(SHT40_I2C_ADDR_46);
         i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2);
         if (i2c_error_code) return HARD_FAULT_ON_SENSOR_NO_2_READ;
@@ -76,7 +76,7 @@ int sensor_init_and_read(void)
 
     // Convert using exact integer math with rounding (centi-units)
     int16_t  calculated_temp_1 = sht4x_temp_centi_from_ticks(temp_ticks_1);  // °C×100, e.g., 2345 => 23.45 °C
-    int16_t calculated_temp_2 = sht4x_temp_centi_from_ticks(temp_ticks_2);   // °C×100
+    int16_t  calculated_temp_2 = sht4x_temp_centi_from_ticks(temp_ticks_2);  // °C×100
     uint16_t calculated_hum_1  = sht4x_rh_centi_from_ticks(hum_ticks_1);     // %×100, e.g., 5678 => 56.78 %RH
     uint16_t calculated_hum_2  = sht4x_rh_centi_from_ticks(hum_ticks_2);     // %×100
 
