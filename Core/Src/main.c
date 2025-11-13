@@ -88,6 +88,7 @@ static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
+void configWakeupTime(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -289,22 +290,47 @@ int join(UART_HandleTypeDef *huart)
   dbg_print_line("JOIN:start");
   HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
   HAL_Delay(300); // let OK come back!
-  uint16_t total_rcv = 0;
-  int16_t total_expected = 11;
   uint8_t rxbuf[256] = {0};
   HAL_UART_Transmit(&huart2, (uint8_t *)"AT+JOIN\r\n", 9, 300);
-  HAL_UART_Receive(&huart2, rxbuf, 4, 100);
+  (void)HAL_UART_Receive(&huart2, rxbuf, 4, 100);
   __HAL_UART_FLUSH_DRREGISTER(&huart2);
   __HAL_UART_CLEAR_IDLEFLAG(&huart2);
 
-  while (total_expected > 0)
+  uint16_t offset = 0;
+  uint32_t start = HAL_GetTick();
+  const uint32_t overall_timeout_ms = 35000U;
+  while ((HAL_GetTick() - start) < overall_timeout_ms && offset < (sizeof(rxbuf) - 1))
   {
-    HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv, 100, &total_rcv, 35000);
-    total_expected -= total_rcv;
+    uint16_t chunk = 0;
+    uint16_t room = (uint16_t)(sizeof(rxbuf) - 1 - offset);
+    HAL_StatusTypeDef st = HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + offset, room, &chunk, 1000);
+    if (st == HAL_TIMEOUT)
+    {
+      continue; // allow longer overall timeout budget
+    }
+    if (st != HAL_OK)
+    {
+      break; // UART failure -> give up
+    }
+    if (chunk == 0)
+    {
+      if ((HAL_GetTick() - start) > 1000U)
+      {
+        break; // idle long enough without more data
+      }
+      continue;
+    }
+    offset += chunk;
   }
 
   __HAL_UART_FLUSH_DRREGISTER(&huart2);
   __HAL_UART_CLEAR_IDLEFLAG(&huart2);
+
+  if (offset >= sizeof(rxbuf))
+  {
+    offset = sizeof(rxbuf) - 1;
+  }
+  rxbuf[offset] = '\0';
 
   char result = find_char_after((const char *)rxbuf, "JOIN: [");
   char error14 = find_char_after((const char *)rxbuf, "\nERROR 1");
@@ -892,12 +918,9 @@ static void MX_RTC_Init(void)
 
   /** Enable the WakeUp
   */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  /* Wake-up timer is programmed in configWakeupTime() */
   /* USER CODE BEGIN RTC_Init 2 */
-
+  configWakeupTime();
   /* USER CODE END RTC_Init 2 */
 
 }
