@@ -70,12 +70,13 @@ static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
-static const uint16_t WAKEUPS_PER_CYCLE =
+static uint16_t wakeups_per_cycle =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
 static volatile bool rtc_using_lsi = false;
 static volatile bool lse_fault_pending = false;
-static uint32_t lse_next_retry_ms = 0;
+static uint32_t wake_interval_ms = SLEEP_INTERVAL_SECONDS * 1000u;
+static uint32_t lse_retry_wakeup_budget = 0;
 
 // LoRaWAN UART Baud
 //  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
@@ -95,10 +96,15 @@ static void MX_ADC_Init(void);
 void EnterDeepSleepMode(void);
 void configWakeupTime(void);
 void RTC_RequestClockFallback(void);
-static void RTC_ServiceClockHealth(void);
+static void RTC_ServiceClockHealth(uint16_t wakeups_since_last);
 static bool RTC_SwitchClockToLSI(void);
 static bool RTC_TryRestoreLSE(void);
 static bool RTC_ReInitPreserveConfig(void);
+static uint32_t RTC_GetRTCCLK_Hz(void);
+static uint32_t RTC_GetCkSpreHz(void);
+static void RTC_UpdatePrescalersForClock(void);
+static void RTC_UpdateWakeDerivatives(uint32_t programmed_ticks, uint32_t ck_spre_hz);
+static uint32_t RTC_ComputeWakeupsForDelay(uint32_t delay_ms);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -613,20 +619,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    RTC_ServiceClockHealth();
-
     uint16_t ticks;
     __disable_irq();
     ticks = wakeup_counter;
     wakeup_counter = 0;
     __enable_irq();
 
+    RTC_ServiceClockHealth(ticks);
+
     wakes_accum += ticks;
 
     // dbg_print_u32("Loop:wakes_accum", wakes_accum);
-    // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+    // dbg_print_u32("Loop:wakeups_per_cycle", wakeups_per_cycle);
 
-    bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
+    bool do_transmit = first_run || (wakes_accum >= wakeups_per_cycle);
 
     // Verify UART is ready after wake-up
     if (!verify_uart_ready(&huart1) || !verify_uart_ready(&huart2))
@@ -644,7 +650,7 @@ int main(void)
       wakeup_counter = 0; // reset for next cycle
       wakes_accum = 0;
       first_run = false;
-      // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+      // dbg_print_u32("Loop:wakeups_per_cycle", wakeups_per_cycle);
       if (is_connected == 0)
       {
         join(&huart2);
@@ -736,6 +742,8 @@ void SystemClock_Config(void)
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+  bool need_lsi = rtc_using_lsi || lse_fault_pending;
+  bool can_drive_lse = !rtc_using_lsi && !lse_fault_pending;
 
   /** Configure the main internal regulator output voltage
   */
@@ -750,17 +758,17 @@ void SystemClock_Config(void)
   * in the RCC_OscInitTypeDef structure.
   */
   uint32_t osc_mask = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_MSI;
-  if (rtc_using_lsi)
+  if (need_lsi)
   {
     osc_mask |= RCC_OSCILLATORTYPE_LSI;
   }
-  else
+  if (can_drive_lse)
   {
     osc_mask |= RCC_OSCILLATORTYPE_LSE;
   }
   RCC_OscInitStruct.OscillatorType = osc_mask;
-  RCC_OscInitStruct.LSEState = rtc_using_lsi ? RCC_LSE_OFF : RCC_LSE_ON;
-  RCC_OscInitStruct.LSIState = rtc_using_lsi ? RCC_LSI_ON : RCC_LSI_OFF;
+  RCC_OscInitStruct.LSEState = can_drive_lse ? RCC_LSE_ON : RCC_LSE_OFF;
+  RCC_OscInitStruct.LSIState = need_lsi ? RCC_LSI_ON : RCC_LSI_OFF;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
@@ -796,13 +804,15 @@ void SystemClock_Config(void)
     Error_Handler();
   }
 
-  if (!rtc_using_lsi)
+  /** Enables or disables the Clock Security System based on the active RTC source
+  */
+  if (!rtc_using_lsi && !lse_fault_pending)
   {
     HAL_RCCEx_EnableLSECSS();
   }
   else
   {
-    __HAL_RCC_LSECSS_DISABLE();
+    HAL_RCCEx_DisableLSECSS();
   }
 }
 
@@ -1051,28 +1061,165 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+static uint32_t RTC_GetRTCCLK_Hz(void)
+{
+  uint32_t src = __HAL_RCC_GET_RTC_SOURCE();
+  switch (src)
+  {
+  case RCC_RTCCLKSOURCE_LSI:
+#ifdef LSI_VALUE
+    return LSI_VALUE;
+#else
+    return 37000U;
+#endif
+  case RCC_RTCCLKSOURCE_LSE:
+#ifdef LSE_VALUE
+    return LSE_VALUE;
+#else
+    return 32768U;
+#endif
+#ifdef RCC_RTCCLKSOURCE_HSE_DIV32
+  case RCC_RTCCLKSOURCE_HSE_DIV32:
+#ifdef HSE_VALUE
+    return (HSE_VALUE / 32U);
+#else
+    break;
+#endif
+#endif
+  default:
+#ifdef LSI_VALUE
+    return LSI_VALUE;
+#else
+    return 37000U;
+#endif
+  }
+  /* Should not reach here */
+  return 37000U;
+}
+
+static uint32_t RTC_GetCkSpreHz(void)
+{
+  uint64_t rtc_clk = (uint64_t)RTC_GetRTCCLK_Hz();
+  uint64_t async = (uint64_t)hrtc.Init.AsynchPrediv + 1ULL;
+  uint64_t sync = (uint64_t)hrtc.Init.SynchPrediv + 1ULL;
+  uint64_t denom = async * sync;
+  if (denom == 0ULL)
+  {
+    return 1U;
+  }
+  uint64_t freq = (rtc_clk + (denom / 2ULL)) / denom;
+  if (freq == 0ULL)
+  {
+    freq = 1ULL;
+  }
+  return (uint32_t)freq;
+}
+
+static void RTC_UpdatePrescalersForClock(void)
+{
+  const uint32_t desired_async = 127U; // keeps ck_spre near 1 Hz across LSE/LSI
+  const uint64_t rtc_clk = (uint64_t)RTC_GetRTCCLK_Hz();
+  const uint64_t async_plus_one = (uint64_t)desired_async + 1ULL;
+  uint64_t sync_plus_one = rtc_clk / async_plus_one;
+  if (sync_plus_one == 0ULL)
+  {
+    sync_plus_one = 1ULL;
+  }
+  uint64_t sync = sync_plus_one - 1ULL;
+  if (sync > 0x7FFFULL)
+  {
+    sync = 0x7FFFULL;
+  }
+  hrtc.Init.AsynchPrediv = desired_async;
+  hrtc.Init.SynchPrediv = (uint32_t)sync;
+}
+
+static void RTC_UpdateWakeDerivatives(uint32_t programmed_ticks, uint32_t ck_spre_hz)
+{
+  if (ck_spre_hz == 0U)
+  {
+    ck_spre_hz = 1U;
+  }
+  uint64_t interval_ms = ((uint64_t)programmed_ticks * 1000ULL + (uint64_t)ck_spre_hz / 2ULL) /
+                         (uint64_t)ck_spre_hz;
+  if (interval_ms == 0ULL)
+  {
+    interval_ms = 1ULL;
+  }
+  wake_interval_ms = (uint32_t)interval_ms;
+
+  const uint64_t cycle_ms = (uint64_t)SLEEP_TIME_MINUTES * 60ULL * 1000ULL;
+  uint64_t needed = (cycle_ms + interval_ms - 1ULL) / interval_ms;
+  if (needed == 0ULL)
+  {
+    needed = 1ULL;
+  }
+  if (needed > 0xFFFFULL)
+  {
+    needed = 0xFFFFULL;
+  }
+  wakeups_per_cycle = (uint16_t)needed;
+}
+
+static uint32_t RTC_ComputeWakeupsForDelay(uint32_t delay_ms)
+{
+  uint32_t interval = wake_interval_ms;
+  if (interval == 0U)
+  {
+    interval = 1U;
+  }
+  uint64_t needed = ((uint64_t)delay_ms + (uint64_t)interval - 1ULL) / (uint64_t)interval;
+  if (needed == 0ULL)
+  {
+    needed = 1ULL;
+  }
+  if (needed > 0x7FFFFFFFULL)
+  {
+    needed = 0x7FFFFFFFULL;
+  }
+  return (uint32_t)needed;
+}
+
 void configWakeupTime()
 {
-  // Optional visual indicator that we (re)armed the wake-up
-  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
-  // Deactivate previous timer before re-arming (HAL recommendation when changing value)
   HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+
+  const uint32_t ck_spre_hz = RTC_GetCkSpreHz();
+  uint64_t desired_ticks = (uint64_t)SLEEP_INTERVAL_SECONDS * (uint64_t)ck_spre_hz;
+  if (desired_ticks == 0ULL)
+  {
+    desired_ticks = 1ULL;
+  }
+
+  if (desired_ticks > 0x1FFFFULL)
+  {
+    desired_ticks = 0x1FFFFULL;
+  }
+
+  uint32_t clock_sel = RTC_WAKEUPCLOCK_CK_SPRE_16BITS;
+  uint32_t reload = (uint32_t)(desired_ticks - 1ULL);
+  if (reload > 0xFFFFU)
+  {
+    clock_sel = RTC_WAKEUPCLOCK_CK_SPRE_17BITS;
+  }
+
+  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, reload, clock_sel) != HAL_OK)
   {
     Error_Handler();
   }
+
+  RTC_UpdateWakeDerivatives((uint32_t)desired_ticks, ck_spre_hz);
 }
 
 static bool RTC_ReInitPreserveConfig(void)
 {
   hrtc.Instance = RTC;
   hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
   hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
   hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
   hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
   hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  RTC_UpdatePrescalersForClock();
   if (HAL_RTC_Init(&hrtc) != HAL_OK)
   {
     return false;
@@ -1142,7 +1289,7 @@ static bool RTC_TryRestoreLSE(void)
   return RTC_ReInitPreserveConfig();
 }
 
-static void RTC_ServiceClockHealth(void)
+static void RTC_ServiceClockHealth(uint16_t wakeups_since_last)
 {
   if (lse_fault_pending)
   {
@@ -1155,21 +1302,42 @@ static void RTC_ServiceClockHealth(void)
       }
       rtc_using_lsi = true;
     }
-    lse_next_retry_ms = HAL_GetTick() + LSE_RETRY_DELAY_MS;
+    lse_retry_wakeup_budget = RTC_ComputeWakeupsForDelay(LSE_RETRY_DELAY_MS);
+    if (lse_retry_wakeup_budget == 0U)
+    {
+      lse_retry_wakeup_budget = 1U;
+    }
   }
 
   if (rtc_using_lsi)
   {
-    if ((int32_t)(HAL_GetTick() - lse_next_retry_ms) >= 0)
+    if (lse_retry_wakeup_budget > 0U)
+    {
+      if (wakeups_since_last >= lse_retry_wakeup_budget)
+      {
+        lse_retry_wakeup_budget = 0U;
+      }
+      else
+      {
+        lse_retry_wakeup_budget -= wakeups_since_last;
+      }
+    }
+
+    if (lse_retry_wakeup_budget == 0U)
     {
       if (RTC_TryRestoreLSE())
       {
         rtc_using_lsi = false;
-        __HAL_RCC_LSECSS_ENABLE();
+        HAL_RCCEx_EnableLSECSS();
+        lse_retry_wakeup_budget = 0U;
       }
       else
       {
-        lse_next_retry_ms = HAL_GetTick() + LSE_RETRY_DELAY_MS;
+        lse_retry_wakeup_budget = RTC_ComputeWakeupsForDelay(LSE_RETRY_DELAY_MS);
+        if (lse_retry_wakeup_budget == 0U)
+        {
+          lse_retry_wakeup_budget = 1U;
+        }
       }
     }
   }
