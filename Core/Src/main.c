@@ -44,6 +44,7 @@
 
 #define DEV_EUI "0025CA0000005638"
 #define JOIN_EUI "0025CA00000055F7"
+#define LSE_RETRY_DELAY_MS 60000U // retry LSE recovery every 60 seconds while on LSI
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -72,6 +73,10 @@ static bool first_run = true;                // Flag to ensure first transmissio
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
 
+static volatile bool rtc_using_lsi = false;
+static volatile bool lse_fault_pending = false;
+static uint32_t lse_next_retry_ms = 0;
+
 // LoRaWAN UART Baud
 //  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
 //  then switch forever to 9600 after we switch the baud of the ezurio module.
@@ -89,6 +94,11 @@ static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void configWakeupTime(void);
+void RTC_RequestClockFallback(void);
+static void RTC_ServiceClockHealth(void);
+static bool RTC_SwitchClockToLSI(void);
+static bool RTC_TryRestoreLSE(void);
+static bool RTC_ReInitPreserveConfig(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -603,6 +613,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    RTC_ServiceClockHealth();
 
     uint16_t ticks;
     __disable_irq();
@@ -738,9 +749,18 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
-                              |RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  uint32_t osc_mask = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_MSI;
+  if (rtc_using_lsi)
+  {
+    osc_mask |= RCC_OSCILLATORTYPE_LSI;
+  }
+  else
+  {
+    osc_mask |= RCC_OSCILLATORTYPE_LSE;
+  }
+  RCC_OscInitStruct.OscillatorType = osc_mask;
+  RCC_OscInitStruct.LSEState = rtc_using_lsi ? RCC_LSE_OFF : RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = rtc_using_lsi ? RCC_LSI_ON : RCC_LSI_OFF;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
@@ -770,15 +790,20 @@ void SystemClock_Config(void)
   PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  PeriphClkInit.RTCClockSelection = rtc_using_lsi ? RCC_RTCCLKSOURCE_LSI : RCC_RTCCLKSOURCE_LSE;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /** Enables the Clock Security System
-  */
-  HAL_RCCEx_EnableLSECSS();
+  if (!rtc_using_lsi)
+  {
+    HAL_RCCEx_EnableLSECSS();
+  }
+  else
+  {
+    __HAL_RCC_LSECSS_DISABLE();
+  }
 }
 
 /**
@@ -901,26 +926,12 @@ static void MX_RTC_Init(void)
 
   /* USER CODE END RTC_Init 1 */
 
-  /** Initialize RTC Only
-  */
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  if (!RTC_ReInitPreserveConfig())
   {
     Error_Handler();
   }
-
-  /** Enable the WakeUp
-  */
-  /* Wake-up timer is programmed in configWakeupTime() */
   /* USER CODE BEGIN RTC_Init 2 */
-  configWakeupTime();
+
   /* USER CODE END RTC_Init 2 */
 
 }
@@ -1049,6 +1060,118 @@ void configWakeupTime()
   if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
   {
     Error_Handler();
+  }
+}
+
+static bool RTC_ReInitPreserveConfig(void)
+{
+  hrtc.Instance = RTC;
+  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK)
+  {
+    return false;
+  }
+
+  configWakeupTime();
+  return true;
+}
+
+void RTC_RequestClockFallback(void)
+{
+  lse_fault_pending = true;
+}
+
+static bool RTC_SwitchClockToLSI(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  __HAL_RCC_RTC_DISABLE();
+  __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    HAL_PWR_DisableBkUpAccess();
+    return false;
+  }
+
+  __HAL_RCC_RTC_CONFIG(RCC_RTCCLKSOURCE_LSI);
+  __HAL_RCC_RTC_ENABLE();
+
+  HAL_PWR_DisableBkUpAccess();
+
+  return RTC_ReInitPreserveConfig();
+}
+
+static bool RTC_TryRestoreLSE(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+
+  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+  __HAL_RCC_RTC_DISABLE();
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    HAL_PWR_DisableBkUpAccess();
+    return false;
+  }
+
+  __HAL_RCC_RTC_CONFIG(RCC_RTCCLKSOURCE_LSE);
+  __HAL_RCC_RTC_ENABLE();
+
+  HAL_PWR_DisableBkUpAccess();
+
+  return RTC_ReInitPreserveConfig();
+}
+
+static void RTC_ServiceClockHealth(void)
+{
+  if (lse_fault_pending)
+  {
+    lse_fault_pending = false;
+    if (!rtc_using_lsi)
+    {
+      if (!RTC_SwitchClockToLSI())
+      {
+        Error_Handler();
+      }
+      rtc_using_lsi = true;
+    }
+    lse_next_retry_ms = HAL_GetTick() + LSE_RETRY_DELAY_MS;
+  }
+
+  if (rtc_using_lsi)
+  {
+    if ((int32_t)(HAL_GetTick() - lse_next_retry_ms) >= 0)
+    {
+      if (RTC_TryRestoreLSE())
+      {
+        rtc_using_lsi = false;
+        __HAL_RCC_LSECSS_ENABLE();
+      }
+      else
+      {
+        lse_next_retry_ms = HAL_GetTick() + LSE_RETRY_DELAY_MS;
+      }
+    }
   }
 }
 /**

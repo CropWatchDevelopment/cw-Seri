@@ -53,7 +53,7 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void RTC_RequestClockFallback(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
