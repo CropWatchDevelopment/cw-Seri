@@ -1,7 +1,7 @@
 #Don't commit Device Registration CSV file
 DeviceCsvImport-*.csv
 
-Web/node_modules/
+
 
 # Folders
 Debug/
