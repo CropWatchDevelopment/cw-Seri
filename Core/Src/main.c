@@ -42,7 +42,7 @@
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
-#define DEV_EUI "0025CA0000005638"
+#define DEV_EUI "0025CA0000002694"
 #define JOIN_EUI "0025CA00000055F7"
 #define LSE_RETRY_DELAY_MS 60000U // retry LSE recovery every 60 seconds while on LSI
 /* USER CODE END PD */
