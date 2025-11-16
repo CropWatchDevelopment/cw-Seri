@@ -53,7 +53,8 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+// Read reset reason flags and encode into an 8-bit mask
+uint8_t Read_Reset_Reason(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/

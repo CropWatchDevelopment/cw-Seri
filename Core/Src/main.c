@@ -503,6 +503,10 @@ int main(void)
 
   /* USER CODE BEGIN SysInit */
 
+  // --- Read reset reason ---
+  volatile uint16_t reset_reason = Read_Reset_Reason();
+  //TODO: Use this info for any (legal) purpose.
+
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -1205,6 +1209,24 @@ void HAL_RCCEx_LSECSS_Callback(void)
     }
 }
 
+// Read reset reason flags and encode into an 8-bit mask
+uint8_t Read_Reset_Reason(void)
+{
+    volatile uint32_t csr = RCC->CSR;
+    uint8_t mask = 0u;
+
+    if (csr & RCC_CSR_PINRSTF)   mask |= (1u << 0);
+    if (csr & RCC_CSR_PORRSTF)   mask |= (1u << 1);
+    if (csr & RCC_CSR_SFTRSTF)   mask |= (1u << 2);
+    if (csr & RCC_CSR_IWDGRSTF)  mask |= (1u << 3);
+    if (csr & RCC_CSR_WWDGRSTF)  mask |= (1u << 4);
+    if (csr & RCC_CSR_LPWRRSTF)  mask |= (1u << 5);
+
+    // Clear flags after reading
+    RCC->CSR |= RCC_CSR_RMVF;
+
+    return mask;
+}
 /* USER CODE END 4 */
 
 /**
