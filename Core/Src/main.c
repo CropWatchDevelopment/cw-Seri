@@ -64,10 +64,12 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
+static uint8_t reset_reason = 0xFF; // Store reset reason
 
 static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
+static bool boot_packet_sent = false;        // Flag to ensure boot info (reset reason) is sent at least once
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
@@ -88,10 +90,44 @@ static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
+void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// Helper to get and clear reset flags
+static uint8_t GetResetSource(void)
+{
+  uint8_t reason = 0xFF;
+
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST)) {
+    reason = 0x06; // Low Power Reset
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_WWDGRST)) {
+    reason = 0x05; // Window Watchdog
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
+    reason = 0x04; // Independent Watchdog
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_SFTRST)) {
+    reason = 0x03; // Software Reset
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PORRST)) {
+    reason = 0x02; // POR/PDR
+  }
+  else if (__HAL_RCC_GET_FLAG(RCC_FLAG_PINRST)) {
+    reason = 0x01; // PIN Reset
+  }
+  else {
+    reason = 0x00; // Unknown/None
+  }
+
+  // Clear flags so next reset can be detected cleanly
+  __HAL_RCC_CLEAR_RESET_FLAGS();
+
+  return reason;
+}
 
 // UART state verification function
 static bool verify_uart_ready(UART_HandleTypeDef *huart)
@@ -145,6 +181,44 @@ static void uart2_rx_flush(UART_HandleTypeDef *huart)
   __HAL_UART_FLUSH_DRREGISTER(huart);
   __HAL_UART_CLEAR_IDLEFLAG(huart);
   __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF | UART_CLEAR_PEF | UART_CLEAR_NEF);
+}
+
+// Helper to send device info (serials + reset reason)
+static void send_device_info_packet(void)
+{
+    // Power up sensors to read serials
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+    HAL_Delay(1000);
+    scan_i2c_bus();
+
+    // Ensure serials are fresh (though they should be stable)
+    read_sensor_serials();
+
+    // Power down sensors
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+
+    uint8_t serial_payload[9] = {0};
+    serial_payload[0] = (uint8_t)(serial_1 >> 24);
+    serial_payload[1] = (uint8_t)(serial_1 >> 16);
+    serial_payload[2] = (uint8_t)(serial_1 >> 8);
+    serial_payload[3] = (uint8_t)(serial_1 & 0xFF);
+
+    serial_payload[4] = (uint8_t)(serial_2 >> 24);
+    serial_payload[5] = (uint8_t)(serial_2 >> 16);
+    serial_payload[6] = (uint8_t)(serial_2 >> 8);
+    serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
+
+    serial_payload[8] = reset_reason;
+
+    // Only send if we have at least one sensor or a reset reason (always true for reset reason)
+    // But user said "send sensor1 and sensor2... if they exist".
+    // If both are 0, we still send reset reason?
+    // The user said "send the 'sensor id and last reset reason' JUST after the JOIN request is successful."
+    // I'll send it regardless of sensor presence, as reset reason is valuable.
+    // If sensors are 0, they are 0.
+    
+    LoRaWAN_SendHex(serial_payload, 9, 9);
+    HAL_Delay(2000); // Give it a moment
 }
 
 /* 1) Simple: for NUL-terminated strings */
@@ -325,6 +399,7 @@ int join(UART_HandleTypeDef *huart)
   if (result == 'O' || error14 == '4')
   {
     is_connected = 1;
+    send_device_info_packet();
     return 1;
   }
 
@@ -528,10 +603,14 @@ int main(void)
   MX_ADC_Init();
   /* USER CODE BEGIN 2 */
 
+  // Capture reset reason early
+  reset_reason = GetResetSource();
+
   // Check if already joined
   if (lorawan_check_joined(&huart2)) {
       is_connected = 1;
       dbg_print_line("Startup:AlreadyJoined");
+      send_device_info_packet();
   } else {
       is_connected = 0;
       dbg_print_line("Startup:NotJoined");
@@ -541,7 +620,7 @@ int main(void)
       HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
       HAL_Delay(300);
       int need_provision = uart2_probe_and_align();
-      if (need_provision == 0)
+      if (need_provision == 1)
       {
         HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300); // One initial AT to clear any odd commands sent before
         HAL_Delay(400);
@@ -679,11 +758,16 @@ int main(void)
       uint8_t payload[6] = {0};
       if (i2c_success == 0)
       {
-        HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_SET);
+        // Enable Battery Measurement Pin (GPIOB Pin 0)
+        HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_SET);
         HAL_Delay(300);
+        
         int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
         uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
-        HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
+        
+        // Disable Battery Measurement Pin
+        HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_RESET);
+        
         lorawan_set_battery_level(&huart2, battery);
 
         if (has_soil_sensor)
@@ -737,9 +821,11 @@ int main(void)
         }
       }
 
-      // Check Serials (First run OR Changed)
-      if (first_run || serial_1 != old_s1 || serial_2 != old_s2) {
-          uint8_t serial_payload[8] = {0};
+      // Check Serials (First run OR Changed OR Boot packet not sent)
+      // Logic moved to join() and startup check
+      /*
+      if (!boot_packet_sent || serial_1 != old_s1 || serial_2 != old_s2) {
+          uint8_t serial_payload[9] = {0};
           serial_payload[0] = (uint8_t)(serial_1 >> 24);
           serial_payload[1] = (uint8_t)(serial_1 >> 16);
           serial_payload[2] = (uint8_t)(serial_1 >> 8);
@@ -750,15 +836,22 @@ int main(void)
           serial_payload[6] = (uint8_t)(serial_2 >> 8);
           serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
 
-          LoRaWAN_SendHex(serial_payload, 8, 9);
+          serial_payload[8] = reset_reason;
+
+          LoRaWAN_SendHex(serial_payload, 9, 9);
+          
+          if (is_connected) {
+              boot_packet_sent = true;
+          }
       }
+      */
 
       first_run = false;
     }
     // Always go back to deep sleep to allow next RTC wake
     EnterDeepSleepMode();
 
-//    HAL_Delay(60000);
+    //    HAL_Delay(60000);
   }
   /* USER CODE END 3 */
 }
@@ -775,7 +868,8 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
 
   /** Configure LSE Drive Capability
   */
@@ -824,14 +918,6 @@ void SystemClock_Config(void)
   }
 
   /** Enables the Clock Security System
-  __HAL_RCC_PWR_CLK_ENABLE();
-
-  /* The voltage scaling allows optimizing the power consumption when the device is
-     clocked below the maximum system frequency, to update the voltage scaling value
-     regarding system frequency refer to product datasheet.  */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
-
-  /** Enables the Clock Security System's interrupt.
   */
   HAL_RCCEx_EnableLSECSS_IT();
 }
@@ -1109,12 +1195,6 @@ void configWakeupTime()
     Error_Handler();
   }
 }
-/**
- * @brief  Wakeup Timer callback.
- * @param  hrtc pointer to a RTC_HandleTypeDef structure that contains
- *                the configuration information for RTC.
- * @retval None
- */
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
   /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
