@@ -48,6 +48,9 @@ uint16_t calculated_hum_1;    // e.g.,  5678 => 56.78 %RH
 int16_t  calculated_temp_2;
 uint16_t calculated_hum_2;
 
+uint32_t serial_1 = 0;
+uint32_t serial_2 = 0;
+
 int16_t i2c_error_code = 0;
 
 void scan_i2c_bus(void)
@@ -60,6 +63,21 @@ void scan_i2c_bus(void)
     if (HAL_I2C_IsDeviceReady(&hi2c1, 0x44 << 1, 1, 10) == HAL_OK) has_sensor_1 = true;
     if (HAL_I2C_IsDeviceReady(&hi2c1, 0x46 << 1, 1, 10) == HAL_OK) has_sensor_2 = true;
     if (HAL_I2C_IsDeviceReady(&hi2c1, 0x63 << 1, 1, 10) == HAL_OK) has_soil_sensor = true;
+}
+
+void read_sensor_serials(void)
+{
+    serial_1 = 0;
+    serial_2 = 0;
+
+    if (has_sensor_1) {
+        sht4x_init(SHT43_I2C_ADDR_44);
+        sht4x_serial_number(&serial_1);
+    }
+    if (has_sensor_2) {
+        sht4x_init(SHT40_I2C_ADDR_46);
+        sht4x_serial_number(&serial_2);
+    }
 }
 
 int sensor_init_and_read(void)
