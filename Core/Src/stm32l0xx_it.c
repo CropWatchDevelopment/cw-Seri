@@ -69,25 +69,11 @@ extern RTC_HandleTypeDef hrtc;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-/**
- * Either handle RCC_CSR_LSECSSD inside NMI_Handler (clear the CSS flag, fall back to LSI, reconfigure the RTC, then exit)
- * or disable CSS if you cannot tolerate a restart.
- */
-
-#if defined (DEBUG_PHASE)
-   while (1){
-       HAL_RCCEx_LSECSS_Callback();
-   }
-#else
-  {
-      HAL_NVIC_SystemReset();
-  }
-#endif
+  /* Handle LSE CSS fault by switching to LSI failover instead of resetting */
+  HAL_RCCEx_LSECSS_Callback();
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-   while (1)
-  {
-  }
+  /* Return immediately; main loop will attempt to restore LSE later */
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 

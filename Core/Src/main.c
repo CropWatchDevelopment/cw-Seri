@@ -58,7 +58,6 @@ I2C_HandleTypeDef hi2c1;
 
 RTC_HandleTypeDef hrtc;
 
-UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
@@ -69,10 +68,19 @@ static uint8_t reset_reason = 0xFF; // Store reset reason
 static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
-static bool boot_packet_sent = false;        // Flag to ensure boot info (reset reason) is sent at least once
+
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
+
+typedef enum
+{
+  RTC_CLOCK_LSE = 0,
+  RTC_CLOCK_LSI = 1
+} rtc_clock_source_t;
+
+static volatile rtc_clock_source_t rtc_clock_source = RTC_CLOCK_LSE;
+static uint32_t last_lse_retry_tick = 0;
 
 // LoRaWAN UART Baud
 //  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa module
@@ -84,13 +92,13 @@ uint32_t baudRate = 115200;
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USART1_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort);
+void configWakeupTime(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -129,39 +137,15 @@ static uint8_t GetResetSource(void)
   return reason;
 }
 
-// UART state verification function
-static bool verify_uart_ready(UART_HandleTypeDef *huart)
-{
-  return (huart != NULL); // Simplified check for now
-}
-
-// Debug logging helpers over huart1 (115200 baud)
-static void dbg_print(const char *s)
-{
-  if (!s)
-    return;
-  size_t n = strlen(s);
-  HAL_StatusTypeDef status = HAL_UART_Transmit(&huart1, (uint8_t *)s, (uint16_t)n, 100);
-  if (status != HAL_OK)
-  {
-    // UART failed, try to recover
-    HAL_UART_DeInit(&huart1);
-    HAL_Delay(10);
-    MX_USART1_UART_Init();
-  }
-}
-static void dbg_print_line(const char *s)
-{
-  if (!s)
-    return;
-  dbg_print(s);
-  dbg_print("\r\n");
-}
 static HAL_StatusTypeDef UART2_SetBaud(uint32_t br)
 {
   // Drain TX and stop RX before touching the peripheral
+  uint32_t t0 = HAL_GetTick();
   while (__HAL_UART_GET_FLAG(&huart2, UART_FLAG_TC) == RESET)
-  { /* wait */
+  {
+    if ((HAL_GetTick() - t0) > 50u) {
+      break; // avoid hanging if clock/peripheral is not ready
+    }
   }
   HAL_UART_AbortReceive(&huart2);
   __HAL_UART_FLUSH_DRREGISTER(&huart2);
@@ -325,38 +309,197 @@ char find_char_after(const char *str, const char *keyword)
   return '\0'; // Not found
 }
 
+static uint32_t rtc_compute_lsi_synch_prediv(void)
+{
+  uint32_t lsi_hz = LSI_VALUE;
+  if (lsi_hz == 0u) {
+    lsi_hz = 37000u; // safety fallback
+  }
+  const uint32_t async_div = 128u; // (AsynchPrediv + 1)
+  uint32_t sync = (lsi_hz / async_div);
+  if (sync == 0u) sync = 1u;
+  if (sync > 0x7FFFu) sync = 0x7FFFu;
+  return sync - 1u;
+}
+
+static void rtc_switch_to_lsi_failover(void)
+{
+  if (rtc_clock_source == RTC_CLOCK_LSI) {
+    return;
+  }
+
+  HAL_PWR_EnableBkUpAccess();
+
+  /* Stop LSE/CSS to clear the failure condition */
+  HAL_RCCEx_DisableLSECSS();
+  __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+
+  /* Enable LSI */
+  __HAL_RCC_LSI_ENABLE();
+  uint32_t t0 = HAL_GetTick();
+  while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET && (HAL_GetTick() - t0) < 200u) {
+    /* wait briefly */
+  }
+
+  /* Switch RTC clock to LSI */
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+  HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
+
+  /* Re-init RTC with LSI dividers */
+  HAL_RTC_DeInit(&hrtc);
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = rtc_compute_lsi_synch_prediv();
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) {
+    Error_Handler();
+  }
+
+  /* Re-arm wakeup timer with new clock source */
+  configWakeupTime();
+
+  last_lse_retry_tick = HAL_GetTick();
+  rtc_clock_source = RTC_CLOCK_LSI;
+}
+
+static bool rtc_try_restore_lse(void)
+{
+  if (rtc_clock_source == RTC_CLOCK_LSE) {
+    return true;
+  }
+
+  uint32_t now = HAL_GetTick();
+  if ((now - last_lse_retry_tick) < 60000u) {
+    return false; // throttle retry to once per minute
+  }
+  last_lse_retry_tick = now;
+
+  HAL_PWR_EnableBkUpAccess();
+
+  /* Try to restart LSE */
+  __HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
+  uint32_t t0 = HAL_GetTick();
+  while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET && (HAL_GetTick() - t0) < 2000u) {
+    /* wait */
+  }
+
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET) {
+    __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+    return false;
+  }
+
+  /* Switch RTC clock back to LSE */
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_RTC;
+  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+  HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
+
+  /* Re-enable CSS on LSE now that it is stable */
+  HAL_RCCEx_EnableLSECSS();
+
+  /* Re-init RTC with LSE dividers */
+  HAL_RTC_DeInit(&hrtc);
+  hrtc.Init.AsynchPrediv = 127;
+  hrtc.Init.SynchPrediv = 255;
+  if (HAL_RTC_Init(&hrtc) != HAL_OK) {
+    Error_Handler();
+  }
+
+  configWakeupTime();
+
+  rtc_clock_source = RTC_CLOCK_LSE;
+  return true;
+}
+
+// Query connection status using ATI 3001 (per Ezurio docs)
+static int lorawan_get_connection_status(UART_HandleTypeDef *huart)
+{
+  if (huart == NULL) return -1;
+
+  const uint8_t cmd[] = "ATI 3001\r\n";
+  uint8_t rxbuf[64] = {0};
+  uint16_t len = 0;
+
+  // Nudge/wake the UART and clear any stale data
+  uart2_rx_flush(huart);
+  (void)HAL_UART_Transmit(huart, (uint8_t*)"AT\r", 3, 300);
+  HAL_Delay(50);
+  // Drain any wake/OK response from the nudge
+  (void)HAL_UARTEx_ReceiveToIdle(huart, rxbuf, sizeof(rxbuf), &len, 200);
+
+  uart2_rx_flush(huart);
+
+  if (HAL_UART_Transmit(huart, (uint8_t *)cmd, sizeof(cmd) - 1u, 300) != HAL_OK) {
+    return -1;
+  }
+
+  // Try to read the response, allow a quick retry if first read is empty
+  if (HAL_UARTEx_ReceiveToIdle(huart, rxbuf, sizeof(rxbuf), &len, 800) != HAL_OK || len == 0) {
+    uint16_t len2 = 0;
+    if (HAL_UARTEx_ReceiveToIdle(huart, rxbuf, sizeof(rxbuf), &len2, 1000) != HAL_OK || len2 == 0) {
+      return -1;
+    }
+    len = len2;
+  }
+
+  // Expected frames: "\n0\r\nOK\r" or "\n1\r\nOK\r"
+  if (span_exists(rxbuf, len, "\n1\r\nOK\r") || span_exists(rxbuf, len, "\r1\r\nOK\r")) {
+    return 1; // Connected
+  }
+  if (span_exists(rxbuf, len, "\n0\r\nOK\r") || span_exists(rxbuf, len, "\r0\r\nOK\r")) {
+    return 0; // Not connected
+  }
+
+  return -1; // Unknown / parse fail
+}
+
 int lorawan_check_joined(UART_HandleTypeDef *huart)
 {
+  // Prefer the explicit connection status query
+  int status = lorawan_get_connection_status(huart);
+  if (status >= 0) {
+    return status;
+  }
+
   // Flush
   uart2_rx_flush(huart);
 
-  // Send AT+NJS
-  HAL_UART_Transmit(huart, (uint8_t *)"AT+NJS\r\n", 8, 300);
+  // Send network join status command
+  HAL_UART_Transmit(huart, (uint8_t *)"ATI 3001\r\n", 10, 300);
 
   uint8_t rxbuf[64] = {0};
   uint16_t len = 0;
 
   // Expecting "\r\n<status>\r\nOK\r\n" or similar.
   // Status: 0=Not Joined, 1=Joined.
-  if (HAL_UARTEx_ReceiveToIdle(huart, rxbuf, sizeof(rxbuf), &len, 1000) == HAL_OK) {
-      if (len > 0) {
-          // Look for "\n1\r" or "\r1\r"
-          if (span_exists(rxbuf, len, "\n1\r") || span_exists(rxbuf, len, "\r1\r")) {
-              return 1;
-          }
-      }
+  if (HAL_UARTEx_ReceiveToIdle(huart, rxbuf, sizeof(rxbuf), &len, 1000) == HAL_OK && len > 0) {
+    // Look for "\n1\r" or "\r1\r"
+    if (span_exists(rxbuf, len, "\n1\r") || span_exists(rxbuf, len, "\r1\r")) {
+      return 1;
+    }
+    if (span_exists(rxbuf, len, "\n0\r") || span_exists(rxbuf, len, "\r0\r")) {
+      return 0;
+    }
   }
-  return 0;
+  // Unknown / parse fail
+  return -1;
 }
 
 int join(UART_HandleTypeDef *huart)
 {
-  if (is_connected)
+  // Refresh connection state from the module before deciding to join
+  int status = lorawan_get_connection_status(huart);
+  if (status == 1) {
+    is_connected = 1;
+    return 1;
+  } else if (status == 0) {
+    is_connected = 0;
+  }
+
+  if (is_connected)  // fallback to cached value if status was unknown
   {
-    dbg_print_line("JOIN:skip");
     return 1;
   }
-  dbg_print_line("JOIN:start");
 
   // Ensure UART is alive
   uart2_rx_flush(&huart2);
@@ -366,9 +509,7 @@ int join(UART_HandleTypeDef *huart)
   HAL_UARTEx_ReceiveToIdle(&huart2, at_buf, sizeof(at_buf), &at_len, 500);
 
   if (!str_exists((char*)at_buf, "OK")) {
-      dbg_print_line("JOIN:AT_fail_probing");
       if (uart2_probe_and_align() < 0) {
-          dbg_print_line("JOIN:probe_fail");
           return 0;
       }
   }
@@ -531,15 +672,24 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
   }
 
   // Ensure we saw at least one of the expected markers in the raw buffer
-  bool has_tx = span_exists(rxbuf, total, "TX:");
+  bool has_tx = span_exists(rxbuf, total, "TX "); // datasheet uses "TX [result]"
   bool has_adrx = span_exists(rxbuf, total, "ADRX:");
-  bool has_error = span_exists(rxbuf, total, "ERROR:");
+  bool has_error = span_exists(rxbuf, total, "ERROR");
 
-  if ((!has_tx && !has_adrx) || has_error) {
-    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    HAL_Delay(200);
-    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300); // just start over....
-    is_connected = 0;
+  if (has_error || (!has_tx && !has_adrx)) {
+    // Double-check actual link state before forcing reconnect logic
+    int link = lorawan_get_connection_status(&huart2);
+    if (link == 1) {
+      is_connected = 1;
+      return;
+    } else if (link == 0) {
+      is_connected = 0;
+      // Only reset if the module explicitly reports not connected
+      (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
+      HAL_Delay(200);
+      (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300);
+    }
+    // If link == -1 (parse fail), skip reset and let next cycle retry
     return;
   }
 
@@ -561,8 +711,6 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
 //    return;
 //  }
 
-  // Neither ERROR nor TX: harmless log (you can decide to treat ADRX-only as success)
-  // dbg_print_line("SEND:no_TX_no_ERROR");
 }
 
 /* USER CODE END 0 */
@@ -597,7 +745,6 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
-  MX_USART1_UART_Init();
   MX_RTC_Init();
   MX_I2C1_Init();
   MX_ADC_Init();
@@ -607,17 +754,13 @@ int main(void)
   reset_reason = GetResetSource();
 
   // Check if already joined
-  if (lorawan_check_joined(&huart2)) {
+  int startup_join_state = lorawan_check_joined(&huart2);
+  if (startup_join_state == 1) {
       is_connected = 1;
-      dbg_print_line("Startup:AlreadyJoined");
       send_device_info_packet();
-  } else {
+  } else if (startup_join_state == 0) {
       is_connected = 0;
-      dbg_print_line("Startup:NotJoined");
-
       HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-      HAL_Delay(300);
-      HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
       HAL_Delay(300);
       int need_provision = uart2_probe_and_align();
       if (need_provision == 1)
@@ -668,6 +811,9 @@ int main(void)
         HAL_Delay(400);
         UART2_SetBaud(9600);
       }
+  } else {
+      // Unknown status; do not drop or re-provision, just proceed and let main loop handle retries
+      is_connected = 0;
   }
 
   // Initial Serial Number Read & Send
@@ -686,6 +832,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* If we are running on LSI due to an earlier LSE failure, periodically try to restore LSE. */
+    if (rtc_clock_source == RTC_CLOCK_LSI) {
+      (void)rtc_try_restore_lse();
+    }
 
     uint16_t ticks;
     __disable_irq();
@@ -700,17 +850,6 @@ int main(void)
 
     bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
 
-    // Verify UART is ready after wake-up
-    if (!verify_uart_ready(&huart1) || !verify_uart_ready(&huart2))
-    {
-      dbg_print_line("UART:reinit_failed");
-      // Additional recovery could be added here if needed
-    }
-
-    if (!do_transmit)
-    {
-      dbg_print_line("Loop:no_tx");
-    }
     if (do_transmit)
     {
       wakeup_counter = 0; // reset for next cycle
@@ -718,6 +857,14 @@ int main(void)
       // first_run = false; // Moved to end of block
 
       // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+      // Refresh connection flag from the module each cycle to avoid stale state
+      int link_state = lorawan_get_connection_status(&huart2);
+      if (link_state == 1) {
+        is_connected = 1;
+      } else if (link_state == 0) {
+        is_connected = 0;
+      }
+
       if (is_connected == 0)
       {
         join(&huart2);
@@ -748,7 +895,7 @@ int main(void)
               serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
               
               LoRaWAN_SendHex(serial_payload, 8, 9);
-              HAL_Delay(2000);
+              HAL_Delay(5000);
           }
       }
 
@@ -791,7 +938,6 @@ int main(void)
           payload[2] = (uint8_t)(calculated_hum_1 >> 8);
           payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
           LoRaWAN_SendHex(payload, 4, 1);
-          // dbg_print_line("TX:done");
         }
       }
       else
@@ -850,6 +996,7 @@ int main(void)
     }
     // Always go back to deep sleep to allow next RTC wake
     EnterDeepSleepMode();
+//    HAL_Delay(5000);
 
     //    HAL_Delay(60000);
   }
@@ -868,8 +1015,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Configure LSE Drive Capability
   */
@@ -879,14 +1025,10 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE
-                              |RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.MSICalibrationValue = 0;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_5;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -897,7 +1039,7 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
@@ -906,9 +1048,8 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_USART2
-                              |RCC_PERIPHCLK_I2C1|RCC_PERIPHCLK_RTC;
-  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1
+                              |RCC_PERIPHCLK_RTC;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
   PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
@@ -919,7 +1060,7 @@ void SystemClock_Config(void)
 
   /** Enables the Clock Security System
   */
-  HAL_RCCEx_EnableLSECSS_IT();
+  HAL_RCCEx_EnableLSECSS();
 }
 
 /**
@@ -957,7 +1098,7 @@ static void MX_ADC_Init(void)
   hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc.Init.LowPowerAutoWait = DISABLE;
-  hadc.Init.LowPowerFrequencyMode = ENABLE;
+  hadc.Init.LowPowerFrequencyMode = DISABLE;
   hadc.Init.LowPowerAutoPowerOff = DISABLE;
   if (HAL_ADC_Init(&hadc) != HAL_OK)
   {
@@ -994,7 +1135,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00000608;
+  hi2c1.Init.Timing = 0x00503D58;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -1066,42 +1207,6 @@ static void MX_RTC_Init(void)
   /* USER CODE BEGIN RTC_Init 2 */
 
   /* USER CODE END RTC_Init 2 */
-
-}
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 9600;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_DMADISABLEONERROR_INIT;
-  huart1.AdvancedInit.DMADisableonRxError = UART_ADVFEATURE_DMA_DISABLEONRXERROR;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
 
 }
 
@@ -1184,15 +1289,50 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+// Compute wakeup reload value according to current RTC clock source
+// to keep the requested interval consistent across LSE/LSI failover.
+static uint32_t rtc_compute_wakeup_reload(uint32_t seconds)
+{
+  uint32_t rtc_hz = (rtc_clock_source == RTC_CLOCK_LSE) ? 32768u : LSI_VALUE;
+  if (rtc_hz == 0u) {
+    rtc_hz = 37000u; // fallback if LSI_VALUE is undefined
+  }
+
+  uint32_t ticks_per_sec = rtc_hz / 16u; // wakeup clock DIV16 is used
+  if (ticks_per_sec == 0u) ticks_per_sec = 1u;
+
+  uint64_t raw = (uint64_t)ticks_per_sec * (uint64_t)seconds;
+  if (raw == 0u) raw = 1u;
+  if (raw > 0xFFFFu) raw = 0xFFFFu; // WUT is 16-bit
+
+  // WUT reload register expects value-1
+  return (uint32_t)(raw - 1u);
+}
+
 void configWakeupTime()
 {
   // Optional visual indicator that we (re)armed the wake-up
-  uint32_t wakeup_timer_value = (uint32_t)SLEEP_INTERVAL_SECONDS * 2048u - 1u; // 32 seconds default
-  // Deactivate previous timer before re-arming (HAL recommendation when changing value)
-  HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+  uint32_t wakeup_timer_value = rtc_compute_wakeup_reload((uint32_t)SLEEP_INTERVAL_SECONDS);
+  HAL_StatusTypeDef st = HAL_ERROR;
+
+  for (int attempt = 0; attempt < 3 && st != HAL_OK; ++attempt)
   {
-    Error_Handler();
+    // Deactivate previous timer before re-arming (HAL recommendation when changing value)
+    HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+    __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+    __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
+    st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
+  }
+
+  if (st != HAL_OK)
+  {
+    // Last-resort: reinit RTC to clear stuck state, then try once more
+    HAL_RTC_DeInit(&hrtc);
+    MX_RTC_Init();
+    HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
+    __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+    __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
+    st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value, RTC_WAKEUPCLOCK_RTCCLK_DIV16);
   }
 }
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
@@ -1250,6 +1390,21 @@ void ConfigureGPIOForLowPower(void)
   HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
 }
 
+// Ensure USART2 is fully reinitialized after STOP / clock gating.
+static void usart2_recover_after_stop(void)
+{
+  if (!__HAL_RCC_USART2_IS_CLK_ENABLED()) {
+    __HAL_RCC_USART2_CLK_ENABLE();
+  }
+
+  HAL_UART_DeInit(&huart2);
+  if (HAL_UART_Init(&huart2) != HAL_OK) {
+    Error_Handler();
+  }
+
+  uart2_rx_flush(&huart2);
+}
+
 /**
  * @brief  Restore GPIOs after wake-up
  * @retval None
@@ -1266,8 +1421,6 @@ void RestoreGPIOAfterWakeup(void)
  */
 void EnterDeepSleepMode(void)
 {
-  /* Properly deinitialize UARTs before sleep */
-  HAL_UART_DeInit(&huart1);
   //  HAL_UART_DeInit(&huart2);
   HAL_I2C_DeInit(&hi2c1);
 
@@ -1276,7 +1429,6 @@ void EnterDeepSleepMode(void)
 
   /* Disable unnecessary peripheral clocks */
   __HAL_RCC_I2C1_CLK_DISABLE();
-  __HAL_RCC_USART1_CLK_DISABLE();
   __HAL_RCC_USART2_CLK_DISABLE();
   __HAL_RCC_GPIOB_CLK_DISABLE();
   //  __HAL_RCC_GPIOC_CLK_DISABLE(); // DO NOT DISABLE GPIO C, That is what the Crystal is connected to!!!
@@ -1306,7 +1458,6 @@ void EnterDeepSleepMode(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_I2C1_CLK_ENABLE();
-  __HAL_RCC_USART1_CLK_ENABLE();
   __HAL_RCC_USART2_CLK_ENABLE();
 
   /* Restore GPIO configuration for normal operation */
@@ -1314,8 +1465,7 @@ void EnterDeepSleepMode(void)
 
   /* Re-initialize peripherals with proper sequence */
   MX_I2C1_Init();
-  MX_USART1_UART_Init();
-  //  MX_USART2_UART_Init();
+  usart2_recover_after_stop();
 
   /* Resume SysTick */
   HAL_ResumeTick();
@@ -1326,36 +1476,8 @@ void EnterDeepSleepMode(void)
 
 void HAL_RCCEx_LSECSS_Callback(void)
 {
-  /*
-   * A wakeup is generated in Standby mode. In any other modes, an interrupt can be sent to
-   * wake-up the software (see Section 7.3.5 of the reference manual).
-   * The software MUST then reset the CSSLSEON bit and stop the defective 32 kHz oscillator
-   * by resetting LSEON bit. It can change the RTC clock source (LSI, HSE or no clock) through
-   * the RTCSEL bit, or take any required action to secure the application.
-   * The frequency of LSE oscillator must be higher than 30 kHz to avoid false positive CSS
-   * detection.
-   */
-   /** Initialise the RCC Oscillators according to the specified parameters
-    * in the RCC_OscInitTypeDef structure.
-    */
-    RCC_OscInitTypeDef RCC_OscInitStruct = {
-        .OscillatorType = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI | RCC_OSCILLATORTYPE_MSI,
-        .MSIState = RCC_MSI_ON,
-        .LSEState = RCC_LSE_OFF,
-        .LSIState = RCC_LSI_ON,
-        .HSIState = RCC_HSI_ON,
-        .HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT,
-        .MSICalibrationValue = 0,
-        .MSIClockRange = RCC_MSIRANGE_5,
-        .PLL = {
-            .PLLState = RCC_PLL_NONE
-        }
-    };
-#warning: "The following might use blocking functions, e.g. when waiting for hardware to sync. Consider doing this in application-code context, rather than ISR."
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-    {
-      Error_Handler();
-    }
+  /* LSE failed. Immediately fall back to LSI for RTC and keep running. */
+  rtc_switch_to_lsi_failover();
 }
 
 /* USER CODE END 4 */
