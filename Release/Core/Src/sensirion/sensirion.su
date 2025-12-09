@@ -1,2 +1,5 @@
-../Core/Src/sensirion/sensirion.c:34:6:scan_i2c_bus	16	static
-../Core/Src/sensirion/sensirion.c:44:5:sensor_init_and_read	24	static
+../Core/Src/sensirion/sensirion.c:14:9:sht4x_temp_centi_from_ticks	8	static
+../Core/Src/sensirion/sensirion.c:23:10:sht4x_rh_centi_from_ticks	8	static
+../Core/Src/sensirion/sensirion.c:56:6:scan_i2c_bus	24	static
+../Core/Src/sensirion/sensirion.c:68:6:read_sensor_serials	16	static
+../Core/Src/sensirion/sensirion.c:83:5:sensor_init_and_read	56	static

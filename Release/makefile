@@ -13,6 +13,7 @@ RM := rm -rf
 -include Core/Startup/subdir.mk
 -include Core/Src/sensirion/subdir.mk
 -include Core/Src/battery/subdir.mk
+-include Core/Src/Tinovi_PM-WCS-3-I2C/subdir.mk
 -include Core/Src/subdir.mk
 -include objects.mk
 
@@ -54,6 +55,9 @@ default.size.stdout \
 OBJDUMP_LIST += \
 seri.list \
 
+OBJCOPY_HEX += \
+seri.hex \
+
 
 # All Target
 all: main-build
@@ -62,8 +66,8 @@ all: main-build
 main-build: seri.elf secondary-outputs
 
 # Tool invocations
-seri.elf seri.map: $(OBJS) $(USER_OBJS) /home/kevin/STM32CubeIDE/workspace_eren/seri/STM32L073RZTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "seri.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"/home/kevin/STM32CubeIDE/workspace_eren/seri/STM32L073RZTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="seri.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+seri.elf seri.map: $(OBJS) $(USER_OBJS) /home/kevin/source/STM32CubeIDE/cw-Seri/STM32L073RZTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "seri.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m0plus -T"/home/kevin/source/STM32CubeIDE/cw-Seri/STM32L073RZTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="seri.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -77,12 +81,17 @@ seri.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	@echo 'Finished building: $@'
 	@echo ' '
 
+seri.hex: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objcopy  -O ihex $(EXECUTABLES) "seri.hex"
+	@echo 'Finished building: $@'
+	@echo ' '
+
 # Other Targets
 clean:
-	-$(RM) default.size.stdout seri.elf seri.list seri.map
+	-$(RM) default.size.stdout seri.elf seri.hex seri.list seri.map
 	-@echo ' '
 
-secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST)
+secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST) $(OBJCOPY_HEX)
 
 fail-specified-linker-script-missing:
 	@echo 'Error: Cannot find the specified linker script. Check the linker settings in the build configuration.'
