@@ -67,6 +67,7 @@ static uint8_t reset_reason = 0xFF; // Store reset reason
 
 static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
+static uint32_t transmission_count = 0;      // Total transmissions sent
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
 
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
@@ -854,6 +855,7 @@ int main(void)
     {
       wakeup_counter = 0; // reset for next cycle
       wakes_accum = 0;
+      transmission_count++;
       // first_run = false; // Moved to end of block
 
       // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
@@ -881,7 +883,8 @@ int main(void)
       uint32_t old_s2 = serial_2;
       read_sensor_serials();
 
-      if (first_run || serial_1 != old_s1 || serial_2 != old_s2) {
+      if (first_run || serial_1 != old_s1 || serial_2 != old_s2 || (transmission_count % 100 == 0)) {
+          transmission_count = 0; // Reset counter to prevent overflow and restart interval
           if (serial_1 != 0 || serial_2 != 0) {
               uint8_t serial_payload[8] = {0};
               serial_payload[0] = (uint8_t)(serial_1 >> 24);
