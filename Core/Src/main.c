@@ -978,8 +978,8 @@ int main(void)
       first_run = false;
     }
     // Always go back to deep sleep to allow next RTC wake
-//    EnterDeepSleepMode();
-    HAL_Delay(5000);
+    EnterDeepSleepMode();
+//    HAL_Delay(5000);
 
     //    HAL_Delay(60000);
   }
