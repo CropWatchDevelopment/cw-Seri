@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "../Tinovi_PM-WCS-3-I2C/pmwcs3.h"
 
 extern I2C_HandleTypeDef hi2c1;
 
@@ -30,10 +31,15 @@ uint16_t sht4x_rh_centi_from_ticks(uint16_t rh_ticks) {
 // Variable definitions (declared as extern in the header)
 bool     has_sensor_1 = false;
 bool     has_sensor_2 = false;
+bool     has_soil_sensor = false;
 uint16_t temp_ticks_1 = 0;
 uint16_t hum_ticks_1  = 0;
 uint16_t temp_ticks_2 = 0;
 uint16_t hum_ticks_2  = 0;
+int16_t  soil_e25     = 0; /* ε25  (scaled by /100.0) */
+int16_t  soil_EC      = 0; /* EC   (scaled by /10.0) */
+int16_t  soil_temp    = 0; /* Temp (scaled by /100.0) */
+int16_t  soil_VWC     = 0; /* VWC  (scaled by /10.0) */
 
 // Converted, centi-units: temperature in °C×100, humidity in %×100
 int16_t  calculated_temp_1;   // e.g., 2345 => 23.45 °C
@@ -42,6 +48,9 @@ uint16_t calculated_hum_1;    // e.g.,  5678 => 56.78 %RH
 int16_t  calculated_temp_2;
 uint16_t calculated_hum_2;
 
+uint32_t serial_1 = 0;
+uint32_t serial_2 = 0;
+
 int16_t i2c_error_code = 0;
 
 void scan_i2c_bus(void)
@@ -49,13 +58,51 @@ void scan_i2c_bus(void)
     // re-set these to false because we want to check every time for safety
     has_sensor_1 = false;
     has_sensor_2 = false;
+    has_soil_sensor = false;
 
     if (HAL_I2C_IsDeviceReady(&hi2c1, 0x44 << 1, 1, 10) == HAL_OK) has_sensor_1 = true;
     if (HAL_I2C_IsDeviceReady(&hi2c1, 0x46 << 1, 1, 10) == HAL_OK) has_sensor_2 = true;
+    if (HAL_I2C_IsDeviceReady(&hi2c1, 0x63 << 1, 1, 10) == HAL_OK) has_soil_sensor = true;
+}
+
+void read_sensor_serials(void)
+{
+    serial_1 = 0;
+    serial_2 = 0;
+
+    if (has_sensor_1) {
+        sht4x_init(SHT43_I2C_ADDR_44);
+        sht4x_serial_number(&serial_1);
+    }
+    if (has_sensor_2) {
+        sht4x_init(SHT40_I2C_ADDR_46);
+        sht4x_serial_number(&serial_2);
+    }
 }
 
 int sensor_init_and_read(void)
 {
+    pmwcs3_t soil;
+    pmwcs3_init(&soil, &hi2c1, 0x63);
+    if (has_soil_sensor) {
+        float ret[4];
+        if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
+            HAL_Delay(400); // Sensor requires ~100 ms for measurement per vendor docs
+            if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
+                // Successfully read soil sensor; you can process soil data here if needed
+                soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0
+                soil_EC   = (int16_t)(ret[1] * 10.0f);  // EC scaled by /10.0
+                soil_temp = (int16_t)(ret[2] * 100.0f); // Temp scaled by /100.0
+                soil_VWC  = (int16_t)(ret[3] * 10.0f);  // VWC scaled by /10.0
+                return 0; // Indicate success if soil sensor read is successful
+            }
+        }
+        has_soil_sensor = false; // Mark as not present if any stage fails
+    }
+
+
+
+
     // If either sensor is missing => error
     if (!has_sensor_1 || !has_sensor_2) {
         i2c_error_code = NO_SENSORS_FOUND;

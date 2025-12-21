@@ -15,11 +15,11 @@
 
 /* ===== Board-specific pins (EDIT THESE) ===== */
 #ifndef VBAT_MEAS_EN_GPIO_Port
-#define VBAT_MEAS_EN_GPIO_Port   GPIOA
+#define VBAT_MEAS_EN_GPIO_Port   GPIOB
 #endif
 
 #ifndef VBAT_MEAS_EN_Pin
-#define VBAT_MEAS_EN_Pin         GPIO_PIN_1
+#define VBAT_MEAS_EN_Pin         GPIO_PIN_0
 #endif
 
 /* 1 = VBAT_MEAS_EN high enables measurement; 0 = low enables measurement */

@@ -1,0 +1,193 @@
+# LoRaWAN Module AT Command Interface Documentation
+
+This document describes the AT command interface for the LoRaWAN module used in the cw-Seri project.
+It has been verified by probing the actual hardware device (`/dev/ttyACM0`) with detailed byte-level analysis.
+
+## Hardware Connection
+
+- **Device**: `/dev/ttyACM0`
+- **Baud Rate**: 9600
+- **Data Bits**: 8
+- **Stop Bits**: 1
+- **Parity**: None
+- **Flow Control**: None
+
+## Response Format (Critical for C/C++ Parsing)
+
+The module uses a specific framing for responses:
+**`<LF> <Response Content> <CR>`**
+
+- **Start Byte**: `0x0A` (Line Feed / `\n`)
+- **End Byte**: `0x0D` (Carriage Return / `\r`)
+
+**Example (Success):**
+Hex: `0A 4F 4B 0D`
+ASCII: `\nOK\r`
+
+**Example (Error):**
+Hex: `0A 45 52 52 4F 52 20 38 31 0D`
+ASCII: `\nERROR 81\r`
+
+*Note: This differs from the standard `\r\nOK\r\n` found in many modems. Parsers must handle the leading `\n` and trailing `\r` correctly.*
+
+## Power Management & Wake-up Procedure
+
+When sleep is enabled (e.g., via `ATS 213=2000`), the module enters a low-power state after the configured timeout (2000ms).
+
+### Wake-up Behavior
+1.  Any UART activity wakes the module.
+2.  The module prints **`WAKE`** (framed as `\nWAKE\r`) upon waking.
+3.  If the wake-up character was `\r` (recommended), the module also processes it as an empty command and returns **`OK`** (framed as `\nOK\r`).
+
+### Recommended Wake-up Sequence
+To ensure reliable communication and prevent data loss during wake-up:
+1.  **Send Wake-up Char**: Send a single `\r` (0x0D).
+2.  **Wait for WAKE**: Read until `\nWAKE\r` is received.
+3.  **Wait for OK**: Read until `\nOK\r` is received (response to the `\r`).
+4.  **Send Command**: Send the actual AT command.
+
+**Example Interaction:**
+```
+[Host]   --> \r
+[Module] <-- \nWAKE\r
+[Module] <-- \nOK\r
+[Host]   --> AT+SEND "00"\r\n
+[Module] <-- \nOK\r
+```
+
+## Verified Happy Paths (Success Scenarios)
+
+The following sequences represent successful interactions captured from the device.
+
+### 1. Module Reset
+**Command:** `ATZ`
+**Response:**
+```
+OK
+```
+
+### 2. Network Join (OTAA)
+**Command:** `AT+JOIN`
+**Immediate Response:**
+```
+OK
+```
+**Asynchronous Event (Success):**
+```
+JOIN: [OK], [TX]: C:1, F:923400000Hz, DR:4, [RX]: W:1, C:1, F:923400000Hz, DR:4
+ADRJ: DR:[^] 5, PO:[x] 12, NB:[x] 1, CP:[!] 7f:00, PL:[^] 242
+```
+
+### 3. Data Transmission
+**Command:** `AT+SEND "010203"`
+**Response:**
+```
+OK
+```
+**Asynchronous Event (Sent):**
+```
+TX: [SENT], C:3, F:922400000Hz, DR:5
+```
+
+### 4. Leave Network
+**Command:** `AT+DROP`
+**Response:**
+```
+OK
+```
+
+## Verified Failure Scenarios
+
+### 1. Join Failure (Gateway Disconnected)
+**Command:** `AT+JOIN`
+**Immediate Response:**
+```
+OK
+```
+**Asynchronous Event (Failure):**
+```
+JOIN: [FAIL], [TX]: C:0, F:923200000Hz, DR:5
+```
+
+### 2. Send Without Join
+**Command:** `AT+SEND "010203"`
+**Response:**
+```
+ERROR 81
+```
+
+### 3. Invalid Command / Syntax
+**Command:** `ATI 3001?`
+**Response:**
+```
+ERROR 48
+```
+*Note: ERROR 48 indicates Missing Argument or Invalid Syntax.*
+
+## Verified AT Command Set
+
+### General Commands
+
+| Command | Description | Response | Notes |
+| :--- | :--- | :--- | :--- |
+| `AT` | Check communication status. | `OK` | Basic connectivity check. |
+| `ATZ` | Reset the module. | `OK` | Resets the module immediately. |
+| `ATI 3001?` | Query module information. | `ERROR 48` | **Not Supported / Invalid Syntax**. |
+
+### Network Management
+
+| Command | Description | Response | Notes |
+| :--- | :--- | :--- | :--- |
+| `AT+JOIN` | Join the LoRaWAN network. | `OK` (Cmd Accepted)<br>`JOIN: [OK]` (Success)<br>`JOIN: [FAIL]` (Fail)<br>`ERROR 14` (Busy) | Join process is asynchronous. |
+| `AT+DROP` | Disconnect/Leave network. | `OK` | Immediately drops session. |
+
+### Configuration (ATS Commands)
+
+| Command | Parameter ID | Value | Description | Response |
+| :--- | :--- | :--- | :--- | :--- |
+| `ATS 602=1` | 602 | `1` | Set Activation Mode to OTAA. | `OK` |
+| `ATS 603=0` | 603 | `0` | Set LoRaWAN Class to A. | `OK` |
+| `ATS 213=<ms>` | 213 | `2000` | Set Sleep Timeout (ms). | `OK` |
+
+### Data Transmission
+
+| Command | Description | Response | Notes |
+| :--- | :--- | :--- | :--- |
+| `AT+SEND "<hex>"` | Send a hex-encoded payload. | `OK` (Success)<br>`ERROR 81` (Not Joined) | Requires quotes around hex string. |
+
+## Error Code Reference
+
+The following error codes have been empirically observed:
+
+| Error Code | Meaning | Triggered By | Notes |
+| :--- | :--- | :--- | :--- |
+| **ERROR 14** | Join Failed / Busy | `AT+JOIN` | Module could not join network. |
+| **ERROR 48** | Missing Argument / Syntax | `ATI 3001?`<br>`0x00` (Wake byte) | Invalid command format or garbage. |
+| **ERROR 81** | Operation Failed / Not Joined | `AT+SEND "..."` | Sending data when not joined to network. |
+
+## C/C++ Implementation Guide (STM32L0)
+
+### 1. Parsing the Response
+Since the response is framed by `0x0A` and `0x0D`, a robust parser should:
+1.  Wait for `0x0A` (Start of Response).
+2.  Read until `0x0D` (End of Response).
+3.  Null-terminate the buffer.
+4.  Check for "OK", "ERROR", or "WAKE".
+
+### 2. Wake-up Implementation
+```c
+void WakeUp(void) {
+    uint8_t wake_char = '\r';
+    char buffer[32];
+    
+    // 1. Send Wake-up Char
+    HAL_UART_Transmit(&huart2, &wake_char, 1, 100);
+    
+    // 2. Wait for WAKE
+    // (Implementation of ReadResponse needed)
+    ReadResponse(&huart2, buffer, 32); // Expect "WAKE"
+    
+    // 3. Wait for OK (Response to \r)
+    ReadResponse(&huart2, buffer, 32); // Expect "OK"
+}
+```

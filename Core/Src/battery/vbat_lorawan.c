@@ -55,24 +55,28 @@ bool vbat_read_mv(ADC_HandleTypeDef *hadc, uint32_t adc_channel, uint16_t *vbat_
 
     vbat_gate(true);
     HAL_Delay(VBAT_SETTLE_MS);
+#define VBAT_DIV_DEN 1
+
+    // Dummy sample to charge ADC S/H cap & settle op-amp/line
+    uint16_t dummy;
+    (void)adc_read_counts(hadc, adc_channel, &dummy);
 
     uint32_t acc = 0;
-    uint16_t s   = 0;
     for (uint32_t i = 0; i < VBAT_SAMPLES; i++) {
+        uint16_t s;
         if (!adc_read_counts(hadc, adc_channel, &s)) { vbat_gate(false); return false; }
         acc += s;
     }
 
     vbat_gate(false);
 
-    uint32_t avg_counts = acc / VBAT_SAMPLES;
+    uint32_t avg = acc / VBAT_SAMPLES;
 
-    /* mv = counts * Vref / ADC_MAX * divider_factor; round properly */
-    uint64_t mv = (uint64_t)avg_counts * (uint64_t)VREF_mV;
+    uint64_t mv = (uint64_t)avg * (uint64_t)VREF_mV * (uint64_t)VBAT_DIV_NUM;
     mv = (mv + (ADC_MAX_COUNTS/2)) / (uint64_t)ADC_MAX_COUNTS;
-    mv *= VBAT_DIV_NUM;
+    mv = (mv + (VBAT_DIV_DEN/2)) / (uint64_t)VBAT_DIV_DEN;
 
-    if (mv > 0xFFFFU) mv = 0xFFFFU;
+    if (mv > 0xFFFFu) mv = 0xFFFFu;
     *vbat_mv_out = (uint16_t)mv;
     return true;
 }
