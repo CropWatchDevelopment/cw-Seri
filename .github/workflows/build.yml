@@ -1,0 +1,24 @@
+name: build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  stm32cubeide:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build STM32CubeIDE project
+        uses: xanderhendriks/action-build-stm32cubeide@v16.1
+        with:
+          project-path: .
+          project-target: "seri/Release"
