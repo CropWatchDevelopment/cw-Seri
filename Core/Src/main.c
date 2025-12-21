@@ -69,7 +69,7 @@ static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
 static uint32_t transmission_count = 0;      // Total transmissions sent
 static bool first_run = true;                // Flag to ensure first transmission happens immediately
-
+static uint16_t readCount = 0;
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) / SLEEP_INTERVAL_SECONDS);
@@ -908,17 +908,22 @@ int main(void)
       uint8_t payload[6] = {0};
       if (i2c_success == 0)
       {
-        // Enable Battery Measurement Pin (GPIOB Pin 0)
-        HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_SET);
-        HAL_Delay(300);
-        
-        int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
-        uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
-        
-        // Disable Battery Measurement Pin
-        HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_RESET);
-        
-        lorawan_set_battery_level(&huart2, battery);
+
+    	  if (readCount > 99)
+    	  {
+    		  readCount = 0;
+			// Enable Battery Measurement Pin (GPIOB Pin 0)
+			HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_SET);
+			HAL_Delay(300);
+
+			int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
+			uint8_t battery = vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c, /*external_power_present=*/false);
+
+			// Disable Battery Measurement Pin
+			HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin, GPIO_PIN_RESET);
+
+			lorawan_set_battery_level(&huart2, battery);
+    	  }
 
         if (has_soil_sensor)
         {
@@ -970,36 +975,11 @@ int main(void)
         }
       }
 
-      // Check Serials (First run OR Changed OR Boot packet not sent)
-      // Logic moved to join() and startup check
-      /*
-      if (!boot_packet_sent || serial_1 != old_s1 || serial_2 != old_s2) {
-          uint8_t serial_payload[9] = {0};
-          serial_payload[0] = (uint8_t)(serial_1 >> 24);
-          serial_payload[1] = (uint8_t)(serial_1 >> 16);
-          serial_payload[2] = (uint8_t)(serial_1 >> 8);
-          serial_payload[3] = (uint8_t)(serial_1 & 0xFF);
-
-          serial_payload[4] = (uint8_t)(serial_2 >> 24);
-          serial_payload[5] = (uint8_t)(serial_2 >> 16);
-          serial_payload[6] = (uint8_t)(serial_2 >> 8);
-          serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
-
-          serial_payload[8] = reset_reason;
-
-          LoRaWAN_SendHex(serial_payload, 9, 9);
-          
-          if (is_connected) {
-              boot_packet_sent = true;
-          }
-      }
-      */
-
       first_run = false;
     }
     // Always go back to deep sleep to allow next RTC wake
-    EnterDeepSleepMode();
-//    HAL_Delay(5000);
+//    EnterDeepSleepMode();
+    HAL_Delay(5000);
 
     //    HAL_Delay(60000);
   }
