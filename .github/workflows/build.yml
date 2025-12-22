@@ -4,9 +4,14 @@ on:
   push:
     branches:
       - master
+    tags:
+      - "v*"
   pull_request:
     branches:
       - master
+
+permissions:
+  contents: write  # needed to create/upload Release assets
 
 jobs:
   stm32cubeide:
@@ -22,3 +27,20 @@ jobs:
         with:
           project-path: .
           project-target: "seri/Release"
+
+      # Optional but highly recommended: find the output so you know the right path
+      - name: Locate build outputs
+        run: |
+          echo "HEX files:"
+          find . -type f -name "*.hex" -print
+          echo "ELF files:"
+          find . -type f -name "*.elf" -print
+
+      # Only runs for tag pushes (v*)
+      - name: Create GitHub Release and upload .hex
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            **/*.hex
+            **/*.elf
