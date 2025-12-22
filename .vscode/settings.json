@@ -1,0 +1,11 @@
+{
+  "clang-format.style": "file",
+  "C_Cpp.clang_format_path": "clang-format",
+  "C_Cpp.clang_format_fallbackStyle": "LLVM",
+  "[c]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "[cpp]": {
+    "editor.defaultFormatter": "xaver.clang-format"
+  }
+}
