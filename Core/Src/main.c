@@ -38,9 +38,9 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SLEEP_TIME_MINUTES \
-    10 // Sleep time in minutes between LoRaWAN transmissions
+    1 // Sleep time in minutes between LoRaWAN transmissions
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
-#define SLEEP_INTERVAL_SECONDS 30
+#define SLEEP_INTERVAL_SECONDS 15
 
 #define DEV_EUI "0025CA00000056E3"
 #define JOIN_EUI "0025CA00000055F7"
@@ -58,12 +58,15 @@ I2C_HandleTypeDef hi2c1;
 
 RTC_HandleTypeDef hrtc;
 
+IWDG_HandleTypeDef hiwdg;
+
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
 static uint8_t reset_reason = 0xFF; // Store reset reason
+static bool iwdg_started = false;
 
 static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
@@ -99,6 +102,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
+static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort);
@@ -148,6 +152,20 @@ static uint8_t GetResetSource(void)
     return reason;
 }
 
+void HAL_PWR_PVDCallback(void)
+{
+    // Reset immediately on VDD drop to avoid undefined behavior.
+    NVIC_SystemReset();
+}
+
+static inline void iwdg_kick(void)
+{
+    if (iwdg_started)
+    {
+        (void)HAL_IWDG_Refresh(&hiwdg);
+    }
+}
+
 static HAL_StatusTypeDef UART2_SetBaud(uint32_t br)
 {
     // Drain TX and stop RX before touching the peripheral
@@ -186,6 +204,7 @@ static void send_device_info_packet(void)
 {
     // Power up sensors to read serials
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+    iwdg_kick();
     HAL_Delay(1000);
     scan_i2c_bus();
 
@@ -216,6 +235,7 @@ static void send_device_info_packet(void)
     // sensors are 0, they are 0.
 
     LoRaWAN_SendHex(serial_payload, 9, 9);
+    iwdg_kick();
     HAL_Delay(2000); // Give it a moment
 }
 
@@ -254,6 +274,7 @@ static int uart2_probe_and_align(void)
 
     for (int pass = 0; pass < 2; ++pass)
     {
+        iwdg_kick();
         uint32_t br = bauds[pass];
 
         // Ensure UART really is at this baud
@@ -262,6 +283,7 @@ static int uart2_probe_and_align(void)
 
         for (int attempt = 0; attempt < 3; ++attempt)
         {
+            iwdg_kick();
             uart2_rx_flush(&huart2);
             HAL_Delay(10);
 
@@ -579,11 +601,13 @@ int join(UART_HandleTypeDef *huart)
 
     uart2_rx_flush(&huart2);
     HAL_UART_Transmit(&huart2, (uint8_t *)"AT+JOIN\r\n", 9, 300);
+    iwdg_kick();
 
     // Wait for response (up to ~35s)
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < 35000)
     {
+        iwdg_kick();
         uint16_t chunk = 0;
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
                                      sizeof(rxbuf) - total_rcv - 1, &chunk,
@@ -615,6 +639,7 @@ int join(UART_HandleTypeDef *huart)
     {
         HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
         HAL_Delay(200);
+        iwdg_kick();
         is_connected = 0;
         return 0;
     }
@@ -844,10 +869,14 @@ int main(void)
     MX_RTC_Init();
     MX_I2C1_Init();
     MX_ADC_Init();
+    MX_IWDG_Init();
     /* USER CODE BEGIN 2 */
 
     // Capture reset reason early
     reset_reason = GetResetSource();
+
+    iwdg_started = true;
+    iwdg_kick();
 
     // Check if already joined
     int startup_join_state = lorawan_check_joined(&huart2);
@@ -910,7 +939,7 @@ int main(void)
             HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
             HAL_Delay(400);
 
-            HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14,
+            HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=1500\r\n", 14,
                               300); // Set Sleep Mode to 2 seconds
             HAL_Delay(400);
             HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
@@ -957,6 +986,7 @@ int main(void)
         __enable_irq();
 
         wakes_accum += ticks;
+        iwdg_kick();
 
         // dbg_print_u32("Loop:wakes_accum", wakes_accum);
         // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
@@ -989,7 +1019,7 @@ int main(void)
 
             // Get I2C Data
             HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-            HAL_Delay(1000); // sensor power-up and stabilization
+            HAL_Delay(500); // sensor power-up and stabilization
             scan_i2c_bus();
             int i2c_success = sensor_init_and_read();
 
@@ -997,6 +1027,8 @@ int main(void)
             uint32_t old_s1 = serial_1;
             uint32_t old_s2 = serial_2;
             read_sensor_serials();
+            // Power down i2c sensors asap
+            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
             if (first_run || serial_1 != old_s1 || serial_2 != old_s2 ||
                 (transmission_count % 100 == 0))
@@ -1017,36 +1049,35 @@ int main(void)
                     serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
 
                     LoRaWAN_SendHex(serial_payload, 8, 9);
-                    HAL_Delay(5000);
+                    iwdg_kick();
+                    EnterDeepSleepMode();
                 }
             }
-
-            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
             // Format data and send
             uint8_t payload[6] = {0};
             if (i2c_success == 0)
             {
 
-                if (readCount > 99)
-                {
-                    readCount = 0;
-                    // Enable Battery Measurement Pin (GPIOB Pin 0)
-                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-                                      GPIO_PIN_SET);
-                    HAL_Delay(300);
-
-                    int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
-                    uint8_t battery =
-                        vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
-                                                /*external_power_present=*/false);
-
-                    // Disable Battery Measurement Pin
-                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-                                      GPIO_PIN_RESET);
-
-                    lorawan_set_battery_level(&huart2, battery);
-                }
+//                if (readCount > 99)
+//                {
+//                    readCount = 0;
+//                    // Enable Battery Measurement Pin (GPIOB Pin 0)
+//                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
+//                                      GPIO_PIN_SET);
+//                    HAL_Delay(300);
+//
+//                    int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
+//                    uint8_t battery =
+//                        vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
+//                                                /*external_power_present=*/false);
+//
+//                    // Disable Battery Measurement Pin
+//                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
+//                                      GPIO_PIN_RESET);
+//
+//                    lorawan_set_battery_level(&huart2, battery);
+//                }
 
                 if (has_soil_sensor)
                 {
@@ -1069,6 +1100,7 @@ int main(void)
                     payload[2] = (uint8_t)(calculated_hum_1 >> 8);
                     payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
                     LoRaWAN_SendHex(payload, 4, 1);
+                    EnterDeepSleepMode();
                 }
             }
             else
@@ -1102,6 +1134,7 @@ int main(void)
 
             first_run = false;
         }
+        iwdg_kick();
         // Always go back to deep sleep to allow next RTC wake
         EnterDeepSleepMode();
         //    HAL_Delay(5000);
@@ -1226,6 +1259,32 @@ static void MX_ADC_Init(void)
     /* USER CODE BEGIN ADC_Init 2 */
 
     /* USER CODE END ADC_Init 2 */
+}
+
+/**
+ * @brief IWDG Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_IWDG_Init(void)
+{
+
+    /* USER CODE BEGIN IWDG_Init 0 */
+    /* Configure IWDG_STOP/IWDG_STDBY option bytes to keep IWDG running in STOP. */
+
+    /* USER CODE END IWDG_Init 0 */
+
+    hiwdg.Instance = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+    hiwdg.Init.Reload = 4095;
+    hiwdg.Init.Window = 4095;
+    if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /* USER CODE BEGIN IWDG_Init 1 */
+
+    /* USER CODE END IWDG_Init 1 */
 }
 
 /**
@@ -1564,6 +1623,7 @@ void EnterDeepSleepMode(void)
     configWakeupTime();
 
     /* Enter STOP Mode with Low Power Regulator */
+    iwdg_kick();
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
     /* === DEVICE IS NOW IN DEEP SLEEP === */
@@ -1584,6 +1644,7 @@ void EnterDeepSleepMode(void)
     /* Re-initialize peripherals with proper sequence */
     MX_I2C1_Init();
     usart2_recover_after_stop();
+    iwdg_kick();
 
     /* Resume SysTick */
     HAL_ResumeTick();

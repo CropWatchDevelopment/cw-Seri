@@ -84,6 +84,14 @@ void HAL_MspInit(void)
   HAL_PWR_EnablePVD();
 
   /* USER CODE BEGIN MspInit 1 */
+  /* Override PVD to interrupt on falling VDD so we can reset cleanly. */
+  sConfigPVD.PVDLevel = PWR_PVDLEVEL_0;
+  sConfigPVD.Mode = PWR_PVD_MODE_IT_FALLING;
+  HAL_PWR_ConfigPVD(&sConfigPVD);
+  HAL_PWR_EnablePVD();
+
+  HAL_NVIC_SetPriority(PVD_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(PVD_IRQn);
 
   /* USER CODE END MspInit 1 */
 }
