@@ -69,11 +69,10 @@ extern RTC_HandleTypeDef hrtc;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-  /* Handle LSE CSS fault by switching to LSI failover instead of resetting */
-  HAL_RCCEx_LSECSS_Callback();
+  /* No LSE/CSS handling; LSE is used only for calibration. */
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-  /* Return immediately; main loop will attempt to restore LSE later */
+  /* Return immediately. */
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
@@ -144,12 +143,11 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles RTC global interrupt through EXTI lines 17, 19 and 20 and LSE CSS interrupt through EXTI line 19.
+  * @brief This function handles RTC global interrupt through EXTI lines 17, 19 and 20.
   */
 void RTC_IRQHandler(void)
 {
   /* USER CODE BEGIN RTC_IRQn 0 */
-
   /* USER CODE END RTC_IRQn 0 */
   HAL_RTCEx_WakeUpTimerIRQHandler(&hrtc);
   /* USER CODE BEGIN RTC_IRQn 1 */

@@ -31,11 +31,18 @@ extern "C" {
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
 
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
+typedef struct
+{
+    uint32_t f_lsi_hz;
+    uint32_t scale_q16; // (LSI nominal / measured) in Q16.16
+    uint8_t valid;
+} lsi_cal_t;
 
 /* USER CODE END ET */
 
@@ -53,7 +60,9 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+bool lsi_calibrate_with_lse(lsi_cal_t *out);
+uint32_t lsi_seconds_to_wut_reload(const lsi_cal_t *cal, uint32_t seconds);
+extern lsi_cal_t g_lsi_cal;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
