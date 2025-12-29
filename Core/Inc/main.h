@@ -75,6 +75,16 @@ extern lsi_cal_t g_lsi_cal;
 #define I2C_ENABLE_Pin GPIO_PIN_5
 #define I2C_ENABLE_GPIO_Port GPIOB
 
+// I2C Error Codes
+#define I2C_READ_SUCCESS 0
+#define I2C_SENSOR_1_MISSING -1
+#define I2C_SENSOR_2_MISSING -2
+#define I2C_BOTH_SENSORS_MISSING -3
+#define I2C_SENSOR_1_READ_FAIL -4
+#define I2C_SENSOR_2_READ_FAIL -5
+#define I2C_READ_ERROR_TEMP_MISMATCH -6
+#define I2C_READ_ERROR_HUMI_MISMATCH -7
+
 /* USER CODE BEGIN Private defines */
 
 /* USER CODE END Private defines */

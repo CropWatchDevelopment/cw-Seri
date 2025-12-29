@@ -37,8 +37,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define SLEEP_TIME_MINUTES \
-    1 // Sleep time in minutes between LoRaWAN transmissions
+// Sleep time in minutes between LoRaWAN transmissions
+#define SLEEP_TIME_MINUTES 1
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30
 
@@ -88,9 +88,12 @@ static uint8_t reset_reason = 0xFF; // Store reset reason
 static volatile uint16_t wakeup_counter = 0; // incremented in ISR
 static uint16_t wakes_accum = 0;             // main-loop accumulator
 static uint32_t transmission_count = 0;      // Total transmissions sent
-static bool first_run =
-    true; // Flag to ensure first transmission happens immediately
-static uint16_t readCount = 0;
+// Flag to ensure first transmission happens immediately
+static bool first_run = true;
+
+static uint16_t send_battery_counter = 0;
+static uint16_t send_sensor_id_counter = 0;
+static bool sensor_changed = true;
 // Number of wakeups per transmission cycle (ceil division to avoid truncation)
 static const uint16_t WAKEUPS_PER_CYCLE =
     (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) /
@@ -200,33 +203,25 @@ static void uart2_rx_flush(UART_HandleTypeDef *huart)
                                      UART_CLEAR_PEF | UART_CLEAR_NEF);
 }
 
-static void send_rtc_clock_indicator(void)
-{
-    if (!is_connected)
-    {
-        return;
-    }
-    uint8_t cal_payload = g_lsi_cal_last_ok ? 5u : 6u;
-    LoRaWAN_SendHex(&cal_payload, 1, 12);
-    if (!g_lsi_cal_last_ok && g_lsi_cal_status != LSI_CAL_STATUS_OK)
-    {
-        LoRaWAN_SendHex(&g_lsi_cal_status, 1, 13);
-    }
-}
+// static void send_rtc_clock_indicator(void)
+//{
+//     if (!is_connected)
+//     {
+//         return;
+//     }
+//     uint8_t cal_payload = g_lsi_cal_last_ok ? 5u : 6u;
+//     LoRaWAN_SendHex(&cal_payload, 1, 12);
+//     if (!g_lsi_cal_last_ok && g_lsi_cal_status != LSI_CAL_STATUS_OK)
+//     {
+//         LoRaWAN_SendHex(&g_lsi_cal_status, 1, 13);
+//     }
+// }
 
 // Helper to send device info (serials + reset reason)
 static void send_device_info_packet(void)
 {
-    // Power up sensors to read serials
-    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-    HAL_Delay(1000);
-    scan_i2c_bus();
-
     // Ensure serials are fresh (though they should be stable)
     read_sensor_serials();
-
-    // Power down sensors
-    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
     uint8_t serial_payload[9] = {0};
     serial_payload[0] = (uint8_t)(serial_1 >> 24);
@@ -241,15 +236,31 @@ static void send_device_info_packet(void)
 
     serial_payload[8] = reset_reason;
 
-    // Only send if we have at least one sensor or a reset reason (always true for
-    // reset reason) But user said "send sensor1 and sensor2... if they exist". If
-    // both are 0, we still send reset reason? The user said "send the 'sensor id
-    // and last reset reason' JUST after the JOIN request is successful." I'll
-    // send it regardless of sensor presence, as reset reason is valuable. If
-    // sensors are 0, they are 0.
+    last_sent_sensor++;
 
-    LoRaWAN_SendHex(serial_payload, 9, 9);
-    HAL_Delay(2000); // Give it a moment
+    if ((last_serial_1 == serial_1 && last_serial_2 == serial_2) || last_sent_sensor > 99)
+    {
+        last_sent_sensor = 0;
+        LoRaWAN_SendHex(serial_payload, 9, 9);
+    }
+}
+
+static void send_device_battery(void)
+{
+    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
+                      GPIO_PIN_SET);
+    HAL_Delay(300);
+
+    int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
+    uint8_t battery =
+        vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
+                                /*external_power_present=*/false);
+
+    // Disable Battery Measurement Pin
+    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
+                      GPIO_PIN_RESET);
+
+    lorawan_set_battery_level(&huart2, battery);
 }
 
 /* 1) Simple: for NUL-terminated strings */
@@ -510,7 +521,7 @@ static bool rtc_measure_wut_ticks(uint16_t reload, uint32_t samples,
     __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
 
     if (HAL_RTCEx_SetWakeUpTimer(&hrtc, reload,
-                                RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+                                 RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
     {
         return false;
     }
@@ -682,7 +693,6 @@ bool lsi_calibrate_with_lse(lsi_cal_t *out)
     return true;
 }
 
-
 // Query connection status using ATI 3001 (per Ezurio docs)
 static int lorawan_get_connection_status(UART_HandleTypeDef *huart)
 {
@@ -843,7 +853,7 @@ int join(UART_HandleTypeDef *huart)
     if (result == 'O' || error14 == '4')
     {
         is_connected = 1;
-//        send_device_info_packet();
+        //        send_device_info_packet();
         return 1;
     }
 
@@ -941,6 +951,8 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
     if (HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 1000) != HAL_OK)
         return;
 
+    return; // This is an early return, maybe remove it!!!!!
+
     // ----- FIXED RECEIVE LOOP -----
     uint8_t rxbuf[256] = {0};
     size_t total = 0;  // accumulator (write offset)
@@ -1024,64 +1036,47 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
         // If link == -1 (parse fail), skip reset and let next cycle retry
         return;
     }
-
-    //
     return;
-
-    //  // this sucks if this hits.
-    //  if (str_exists((char*)rxbuf, "ERROR 14")) {
-    //    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"AT\r\n", 4, 300);
-    //    HAL_Delay(200);
-    //    (void)HAL_UART_Transmit(&huart2, (uint8_t*)"ATZ\r\n", 5, 300); // just
-    //    start over.... is_connected = 0; return;
-    //  }
-    //
-    //  //
-    //  if (str_exists((char*)rxbuf, "TX:") || str_exists((char*)rxbuf, "ADRX:"))
-    //  {
-    //    // success path (matches your expected frames)
-    //    return;
-    //  }
 }
 
 /* USER CODE END 0 */
 
 /**
-  * @brief  The application entry point.
-  * @retval int
-  */
+ * @brief  The application entry point.
+ * @retval int
+ */
 int main(void)
 {
 
-  /* USER CODE BEGIN 1 */
+    /* USER CODE BEGIN 1 */
 
-  /* USER CODE END 1 */
+    /* USER CODE END 1 */
 
-  /* MCU Configuration--------------------------------------------------------*/
+    /* MCU Configuration--------------------------------------------------------*/
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+    HAL_Init();
 
-  /* USER CODE BEGIN Init */
+    /* USER CODE BEGIN Init */
 
-  /* USER CODE END Init */
+    /* USER CODE END Init */
 
-  /* Configure the system clock */
-  SystemClock_Config();
+    /* Configure the system clock */
+    SystemClock_Config();
 
-  /* USER CODE BEGIN SysInit */
+    /* USER CODE BEGIN SysInit */
 
-  /* USER CODE END SysInit */
+    /* USER CODE END SysInit */
 
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_USART2_UART_Init();
-  MX_RTC_Init();
-  g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
-  configWakeupTime();
-  MX_I2C1_Init();
-  MX_ADC_Init();
-  /* USER CODE BEGIN 2 */
+    /* Initialize all configured peripherals */
+    MX_GPIO_Init();
+    MX_USART2_UART_Init();
+    MX_RTC_Init();
+    g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
+    configWakeupTime();
+    MX_I2C1_Init();
+    MX_ADC_Init();
+    /* USER CODE BEGIN 2 */
 
     // Capture reset reason early
     reset_reason = GetResetSource();
@@ -1164,22 +1159,15 @@ int main(void)
         is_connected = 0;
     }
 
-    // Initial Serial Number Read & Send
-//    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-//    HAL_Delay(1000);
-//    scan_i2c_bus();
-//    read_sensor_serials();
-//    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+    /* USER CODE END 2 */
 
-  /* USER CODE END 2 */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
+    /* Infinite loop */
+    /* USER CODE BEGIN WHILE */
     while (1)
     {
-    /* USER CODE END WHILE */
+        /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
+        /* USER CODE BEGIN 3 */
         uint16_t ticks;
         __disable_irq();
         ticks = wakeup_counter;
@@ -1225,421 +1213,351 @@ int main(void)
             }
 
             // if connected, send 5 on successful calibration, 6 on failure
-            send_rtc_clock_indicator();
+            //            send_rtc_clock_indicator();
 
+            //            // Get I2C Data
+            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+            HAL_Delay(450); // Datasheet says 1mS to power up for the sensors, but wait for passives to stabilize
+            scan_i2c_bus();
+            int i2c_read_result = sensor_init_and_read();
+            send_device_info_packet();
+            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET); // always disable I2C power after reading
 
+            // Format data and send
+            uint8_t payload[6] = {0};
+            switch (i2c_read_result)
+            {
+            case I2C_READ_SUCCESS:
+            {
+                payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+                payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+                payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+                payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
+                LoRaWAN_SendHex(payload, 4, 1);
+                break;
+            }
+            case I2C_SENSOR_1_MISSING:
+            {
+                uint8_t code = 1;
+                LoRaWAN_SendHex(&code, 1, 10);
+                break;
+            }
+            case I2C_SENSOR_2_MISSING:
+            {
+                uint8_t code = 2;
+                LoRaWAN_SendHex(&code, 1, 10);
+                break;
+            }
+            case I2C_SENSOR_1_READ_FAIL:
+            {
+                uint8_t code = 1;
+                LoRaWAN_SendHex(&code, 1, 10);
+                break;
+            }
+            case I2C_SENSOR_2_READ_FAIL:
+            {
+                uint8_t code = 2;
+                LoRaWAN_SendHex(&code, 1, 10);
+                break;
+            }
+            case I2C_READ_ERROR_TEMP_MISMATCH:
+            {
+                payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+                payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
 
-
-            //// COMMENTED OUT FOR TESTS
-
-
-
-
-
-//            // Get I2C Data
-//            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-//            HAL_Delay(1000); // sensor power-up and stabilization
-//            scan_i2c_bus();
-//            int i2c_success = sensor_init_and_read();
-//
-//            // Read Serials while power is on
-//            uint32_t old_s1 = serial_1;
-//            uint32_t old_s2 = serial_2;
-//            read_sensor_serials();
-//
-//            if (first_run || serial_1 != old_s1 || serial_2 != old_s2 ||
-//                (transmission_count % 100 == 0))
-//            {
-//                transmission_count =
-//                    0; // Reset counter to prevent overflow and restart interval
-//                if (serial_1 != 0 || serial_2 != 0)
-//                {
-//                    uint8_t serial_payload[8] = {0};
-//                    serial_payload[0] = (uint8_t)(serial_1 >> 24);
-//                    serial_payload[1] = (uint8_t)(serial_1 >> 16);
-//                    serial_payload[2] = (uint8_t)(serial_1 >> 8);
-//                    serial_payload[3] = (uint8_t)(serial_1 & 0xFF);
-//
-//                    serial_payload[4] = (uint8_t)(serial_2 >> 24);
-//                    serial_payload[5] = (uint8_t)(serial_2 >> 16);
-//                    serial_payload[6] = (uint8_t)(serial_2 >> 8);
-//                    serial_payload[7] = (uint8_t)(serial_2 & 0xFF);
-//
-//                    LoRaWAN_SendHex(serial_payload, 8, 9);
-//                    HAL_Delay(5000);
-//                }
-//            }
-//
-//            HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
-//
-//            // Format data and send
-//            uint8_t payload[6] = {0};
-//            if (i2c_success == 0)
-//            {
-//
-//                if (readCount > 99)
-//                {
-//                    readCount = 0;
-//                    // Enable Battery Measurement Pin (GPIOB Pin 0)
-//                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-//                                      GPIO_PIN_SET);
-//                    HAL_Delay(300);
-//
-//                    int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
-//                    uint8_t battery =
-//                        vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
-//                                                /*external_power_present=*/false);
-//
-//                    // Disable Battery Measurement Pin
-//                    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-//                                      GPIO_PIN_RESET);
-//
-//                    lorawan_set_battery_level(&huart2, battery);
-//                }
-//
-//                if (has_soil_sensor)
-//                {
-//                    uint8_t soil_payload[8] = {0};
-//                    soil_payload[0] = (uint8_t)(soil_e25 >> 8);
-//                    soil_payload[1] = (uint8_t)(soil_e25 & 0xFF);
-//                    soil_payload[2] = (uint8_t)(soil_EC >> 8);
-//                    soil_payload[3] = (uint8_t)(soil_EC & 0xFF);
-//                    soil_payload[4] = (uint8_t)(soil_temp >> 8);
-//                    soil_payload[5] = (uint8_t)(soil_temp & 0xFF);
-//                    soil_payload[6] = (uint8_t)(soil_VWC >> 8);
-//                    soil_payload[7] = (uint8_t)(soil_VWC & 0xFF);
-//
-//                    LoRaWAN_SendHex(soil_payload, sizeof(soil_payload), 2);
-//                }
-//                else
-//                {
-//                    payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-//                    payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-//                    payload[2] = (uint8_t)(calculated_hum_1 >> 8);
-//                    payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-//                    LoRaWAN_SendHex(payload, 4, 1);
-//                }
-//            }
-//            else
-//            {
-//                // We FAILED to get a good reading for whatever reason
-//                // We need to specify why soon...
-//
-//                // 1,2,3 all are sensor failures and will not contain data
-//                if (i2c_success == 1 || i2c_success == 2 || i2c_success == 3)
-//                {
-//                    uint8_t code = (uint8_t)i2c_success;
-//                    LoRaWAN_SendHex(&code, 1, 10);
-//                }
-//                // if i2c_success is 4, then the sensors returned data, but do not agree
-//                // on the correct temp
-//                if (i2c_success == 4)
-//                {
-//                    // add the dis-agreed sensor info to payload
-//
-//                    payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-//                    payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-//                    payload[2] = calculated_hum_1;
-//
-//                    payload[3] = (uint8_t)(calculated_temp_2 >> 8);
-//                    payload[4] = (uint8_t)(calculated_temp_2 & 0xFF);
-//                    payload[5] = calculated_hum_2;
-//                    LoRaWAN_SendHex(payload, 6,
-//                                    11); // send both dis-agreed values and an error
-//                }
-//            }
-
-            ////////// END COMMENT OUT
+                payload[2] = (uint8_t)(calculated_temp_2 >> 8);
+                payload[3] = (uint8_t)(calculated_temp_2 & 0xFF);
+                LoRaWAN_SendHex(payload, 4, 11); // send both dis-agreed values and an error
+                break;
+            }
+            default:
+                // Unknown error
+                break;
+            }
 
             first_run = false;
         }
         // Always go back to deep sleep to allow next RTC wake
         EnterDeepSleepMode();
-//            HAL_Delay(5000);
+        //            HAL_Delay(5000);
 
         //    HAL_Delay(60000);
     }
-  /* USER CODE END 3 */
+    /* USER CODE END 3 */
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
+ * @brief System Clock Configuration
+ * @retval None
+ */
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
-  /* Start LSE early for LSI calibration time budget */
-  HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
-  __HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
+    /* Start LSE early for LSI calibration time budget */
+    HAL_PWR_EnableBkUpAccess();
+    __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
+    __HAL_RCC_LSE_CONFIG(RCC_LSE_ON);
 
-  /** Configure the main internal regulator output voltage
-  */
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+    /** Configure the main internal regulator output voltage
+     */
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    /** Initializes the RCC Oscillators according to the specified parameters
+     * in the RCC_OscInitTypeDef structure.
+     */
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    /** Initializes the CPU, AHB and APB buses clocks
+     */
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1
-                              |RCC_PERIPHCLK_RTC;
-  PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
-  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
-  PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
+    PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
+    PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+    {
+        Error_Handler();
+    }
 }
 
 /**
-  * @brief ADC Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief ADC Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_ADC_Init(void)
 {
 
-  /* USER CODE BEGIN ADC_Init 0 */
+    /* USER CODE BEGIN ADC_Init 0 */
 
-  /* USER CODE END ADC_Init 0 */
+    /* USER CODE END ADC_Init 0 */
 
-  ADC_ChannelConfTypeDef sConfig = {0};
+    ADC_ChannelConfTypeDef sConfig = {0};
 
-  /* USER CODE BEGIN ADC_Init 1 */
+    /* USER CODE BEGIN ADC_Init 1 */
 
-  /* USER CODE END ADC_Init 1 */
+    /* USER CODE END ADC_Init 1 */
 
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
-  hadc.Instance = ADC1;
-  hadc.Init.OversamplingMode = DISABLE;
-  hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
-  hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.SamplingTime = ADC_SAMPLETIME_160CYCLES_5;
-  hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
-  hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc.Init.ContinuousConvMode = DISABLE;
-  hadc.Init.DiscontinuousConvMode = DISABLE;
-  hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc.Init.DMAContinuousRequests = DISABLE;
-  hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  hadc.Init.LowPowerAutoWait = DISABLE;
-  hadc.Init.LowPowerFrequencyMode = DISABLE;
-  hadc.Init.LowPowerAutoPowerOff = DISABLE;
-  if (HAL_ADC_Init(&hadc) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+     */
+    hadc.Instance = ADC1;
+    hadc.Init.OversamplingMode = DISABLE;
+    hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV1;
+    hadc.Init.Resolution = ADC_RESOLUTION_12B;
+    hadc.Init.SamplingTime = ADC_SAMPLETIME_160CYCLES_5;
+    hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
+    hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+    hadc.Init.ContinuousConvMode = DISABLE;
+    hadc.Init.DiscontinuousConvMode = DISABLE;
+    hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+    hadc.Init.DMAContinuousRequests = DISABLE;
+    hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+    hadc.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+    hadc.Init.LowPowerAutoWait = DISABLE;
+    hadc.Init.LowPowerFrequencyMode = DISABLE;
+    hadc.Init.LowPowerAutoPowerOff = DISABLE;
+    if (HAL_ADC_Init(&hadc) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_0;
-  sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC_Init 2 */
+    /** Configure for the selected ADC regular channel to be converted.
+     */
+    sConfig.Channel = ADC_CHANNEL_0;
+    sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+    if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /* USER CODE BEGIN ADC_Init 2 */
 
-  /* USER CODE END ADC_Init 2 */
-
+    /* USER CODE END ADC_Init 2 */
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_I2C1_Init(void)
 {
 
-  /* USER CODE BEGIN I2C1_Init 0 */
+    /* USER CODE BEGIN I2C1_Init 0 */
 
-  /* USER CODE END I2C1_Init 0 */
+    /* USER CODE END I2C1_Init 0 */
 
-  /* USER CODE BEGIN I2C1_Init 1 */
+    /* USER CODE BEGIN I2C1_Init 1 */
 
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x00503D58;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    /* USER CODE END I2C1_Init 1 */
+    hi2c1.Instance = I2C1;
+    hi2c1.Init.Timing = 0x00503D58;
+    hi2c1.Init.OwnAddress1 = 0;
+    hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.OwnAddress2 = 0;
+    hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+    if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  /** Configure Analogue filter
-  */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    /** Configure Analogue filter
+     */
+    if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
+    /** Configure Digital filter
+     */
+    if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /* USER CODE BEGIN I2C1_Init 2 */
 
-  /* USER CODE END I2C1_Init 2 */
-
+    /* USER CODE END I2C1_Init 2 */
 }
 
 /**
-  * @brief RTC Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief RTC Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_RTC_Init(void)
 {
 
-  /* USER CODE BEGIN RTC_Init 0 */
+    /* USER CODE BEGIN RTC_Init 0 */
 
-  /* USER CODE END RTC_Init 0 */
+    /* USER CODE END RTC_Init 0 */
 
-  /* USER CODE BEGIN RTC_Init 1 */
+    /* USER CODE BEGIN RTC_Init 1 */
 
-  /* USER CODE END RTC_Init 1 */
+    /* USER CODE END RTC_Init 1 */
 
-  /** Initialize RTC Only
-  */
-  hrtc.Instance = RTC;
-  hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
-  hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = rtc_compute_lsi_synch_prediv();
-  hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
-  hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
-  hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
-  hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
-  if (HAL_RTC_Init(&hrtc) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    /** Initialize RTC Only
+     */
+    hrtc.Instance = RTC;
+    hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+    hrtc.Init.AsynchPrediv = 127;
+    hrtc.Init.SynchPrediv = rtc_compute_lsi_synch_prediv();
+    hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+    hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+    hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+    hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+    if (HAL_RTC_Init(&hrtc) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  /** Enable the WakeUp
-  */
-  if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN RTC_Init 2 */
+    /** Enable the WakeUp
+     */
+    if (HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, 0, RTC_WAKEUPCLOCK_RTCCLK_DIV16) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /* USER CODE BEGIN RTC_Init 2 */
 
-  /* USER CODE END RTC_Init 2 */
-
+    /* USER CODE END RTC_Init 2 */
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_USART2_UART_Init(void)
 {
 
-  /* USER CODE BEGIN USART2_Init 0 */
+    /* USER CODE BEGIN USART2_Init 0 */
 
-  /* USER CODE END USART2_Init 0 */
+    /* USER CODE END USART2_Init 0 */
 
-  /* USER CODE BEGIN USART2_Init 1 */
+    /* USER CODE BEGIN USART2_Init 1 */
 
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 9600;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
+    /* USER CODE END USART2_Init 1 */
+    huart2.Instance = USART2;
+    huart2.Init.BaudRate = 9600;
+    huart2.Init.WordLength = UART_WORDLENGTH_8B;
+    huart2.Init.StopBits = UART_STOPBITS_1;
+    huart2.Init.Parity = UART_PARITY_NONE;
+    huart2.Init.Mode = UART_MODE_TX_RX;
+    huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+    huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+    huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+    if (HAL_UART_Init(&huart2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    /* USER CODE BEGIN USART2_Init 2 */
 
-  /* USER CODE END USART2_Init 2 */
-
+    /* USER CODE END USART2_Init 2 */
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    /* USER CODE BEGIN MX_GPIO_Init_1 */
 
-  /* USER CODE END MX_GPIO_Init_1 */
+    /* USER CODE END MX_GPIO_Init_1 */
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+    /* GPIO Ports Clock Enable */
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_RESET);
+    /*Configure GPIO pin Output Level */
+    HAL_GPIO_WritePin(DBG_LED_GPIO_Port, DBG_LED_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin, GPIO_PIN_RESET);
+    /*Configure GPIO pin Output Level */
+    HAL_GPIO_WritePin(GPIOB, VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : DBG_LED_Pin */
-  GPIO_InitStruct.Pin = DBG_LED_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(DBG_LED_GPIO_Port, &GPIO_InitStruct);
+    /*Configure GPIO pin : DBG_LED_Pin */
+    GPIO_InitStruct.Pin = DBG_LED_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(DBG_LED_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : VBAT_MEAS_EN_Pin I2C_ENABLE_Pin */
-  GPIO_InitStruct.Pin = VBAT_MEAS_EN_Pin|I2C_ENABLE_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    /*Configure GPIO pins : VBAT_MEAS_EN_Pin I2C_ENABLE_Pin */
+    GPIO_InitStruct.Pin = VBAT_MEAS_EN_Pin | I2C_ENABLE_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
+    /* USER CODE BEGIN MX_GPIO_Init_2 */
 
-  /* USER CODE END MX_GPIO_Init_2 */
+    /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -1841,34 +1759,34 @@ void EnterDeepSleepMode(void)
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
+    /* USER CODE BEGIN Error_Handler_Debug */
     /* User can add his own implementation to report the HAL error return state */
     __disable_irq();
     //  while (1)
     //  {
     //  }
     HAL_NVIC_SystemReset();
-  /* USER CODE END Error_Handler_Debug */
+    /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
+    /* USER CODE BEGIN 6 */
     /* User can add his own implementation to report the file name and line
        number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
        line) */
-  /* USER CODE END 6 */
+    /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */

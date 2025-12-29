@@ -51,7 +51,10 @@ uint16_t calculated_hum_2;
 uint32_t serial_1 = 0;
 uint32_t serial_2 = 0;
 
-int16_t i2c_error_code = 0;
+uint32_t last_serial_1 = 0; // Last Sensor 1 value
+uint32_t last_serial_2 = 0; // Last Sensor 2 value
+
+int16_t i2c_result = 0;
 
 void scan_i2c_bus(void)
 {
@@ -82,43 +85,40 @@ void read_sensor_serials(void)
 
 int sensor_init_and_read(void)
 {
-    pmwcs3_t soil;
-    pmwcs3_init(&soil, &hi2c1, 0x63);
-    if (has_soil_sensor) {
-        float ret[4];
-        if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
-            HAL_Delay(400); // Sensor requires ~100 ms for measurement per vendor docs
-            if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
-                // Successfully read soil sensor; you can process soil data here if needed
-                soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0
-                soil_EC   = (int16_t)(ret[1] * 10.0f);  // EC scaled by /10.0
-                soil_temp = (int16_t)(ret[2] * 100.0f); // Temp scaled by /100.0
-                soil_VWC  = (int16_t)(ret[3] * 10.0f);  // VWC scaled by /10.0
-                return 0; // Indicate success if soil sensor read is successful
-            }
-        }
-        has_soil_sensor = false; // Mark as not present if any stage fails
-    }
+    // pmwcs3_t soil;
+    // pmwcs3_init(&soil, &hi2c1, 0x63);
+    // if (has_soil_sensor) {
+    //     float ret[4];
+    //     if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
+    //         HAL_Delay(400); // Sensor requires ~100 ms for measurement per vendor docs
+    //         if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
+    //             // Successfully read soil sensor; you can process soil data here if needed
+    //             soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0
+    //             soil_EC   = (int16_t)(ret[1] * 10.0f);  // EC scaled by /10.0
+    //             soil_temp = (int16_t)(ret[2] * 100.0f); // Temp scaled by /100.0
+    //             soil_VWC  = (int16_t)(ret[3] * 10.0f);  // VWC scaled by /10.0
+    //             return 0; // Indicate success if soil sensor read is successful
+    //         }
+    //     }
+    //     has_soil_sensor = false; // Mark as not present if any stage fails
+    // }
 
 
 
 
     // If either sensor is missing => error
-    if (!has_sensor_1 || !has_sensor_2) {
-        i2c_error_code = NO_SENSORS_FOUND;
-        return 1; // sensor 1 or 2 not found
-    }
+    if (!has_sensor_1) return I2C_SENSOR_1_MISSING; // sensor 1 or 2 not found
+    if (!has_sensor_2) return I2C_SENSOR_2_MISSING; // sensor 1 or 2 not found
 
-    i2c_error_code = NO_ERROR;
-    HAL_Delay(100);
+    i2c_result = I2C_READ_SUCCESS;
 
     if (has_sensor_1) {
         sht4x_init(SHT43_I2C_ADDR_44);
         sht4x_soft_reset();
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT43_I2C_ADDR_44);
-        i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_1, &hum_ticks_1);
-        if (i2c_error_code) return 2; // hard fault on read
+
+        if (sht4x_measure_high_precision_ticks(&temp_ticks_1, &hum_ticks_1) != I2C_READ_SUCCESS) return I2C_SENSOR_1_READ_FAIL; // hard fault on read
     }
 
     if (has_sensor_2) {
@@ -126,9 +126,10 @@ int sensor_init_and_read(void)
         sht4x_soft_reset();
         sensirion_i2c_hal_sleep_usec(10000);
         sht4x_init(SHT40_I2C_ADDR_46);
-        i2c_error_code = sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2);
-        if (i2c_error_code) return 3; // hard fault on read
+        if (sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2) != I2C_READ_SUCCESS) return I2C_SENSOR_2_READ_FAIL; // hard fault on read
     }
+    // Power down sensors ASAP! (will happen again later too just for safety)
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
     // Convert using exact integer math with rounding (centi-units)
     calculated_temp_1 = sht4x_temp_centi_from_ticks(temp_ticks_1);  // °C×100
@@ -142,24 +143,21 @@ int sensor_init_and_read(void)
 
     // If the difference between the two temp sensors is greater than 5.00 °C
     if (temp_delta > 500) {
-        return 4;
+        return I2C_READ_ERROR_TEMP_MISMATCH;
     }
 
+    // TODO: Uncomment humidity check if desired (Not currently in the requirements checklist)
     // Compute absolute humidity delta in centi-%RH
-    uint16_t hum_diff = (calculated_hum_1 > calculated_hum_2) ? (calculated_hum_1 - calculated_hum_2) : (calculated_hum_2 - calculated_hum_1);
-
+    // uint16_t hum_diff = (calculated_hum_1 > calculated_hum_2) ? (calculated_hum_1 - calculated_hum_2) : (calculated_hum_2 - calculated_hum_1);
     // If the difference between the two humidity sensors is greater than 5.00 %RH
-    if (hum_diff > 500) {
-        return 5;  // Custom error for humidity mismatch
-    }
+    // if (hum_diff > 500) {
+    //     return I2C_READ_ERROR_HUMI_MISMATCH;
+    // }
 
     // If you need +55.00 °C offset for transmission, do it here without
     // polluting the stored/calculated values:
     calculated_temp_1 = calculated_temp_1 + 5500;
     // (use tx_temp_* to build your payload)
 
-    if (i2c_error_code) {
-        return 1;
-    }
-    return 0;
+    return I2C_READ_SUCCESS;
 }

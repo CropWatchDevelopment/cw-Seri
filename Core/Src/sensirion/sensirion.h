@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+
 // Converted values (centi-units):
 //  - Temperature: °C × 100  (e.g., 2345 => 23.45 °C)
 //  - Humidity:    %RH × 100 (e.g., 5678 => 56.78 %RH)
@@ -21,6 +22,9 @@ extern bool     has_sensor_1;
 extern bool     has_sensor_2;
 extern bool     has_soil_sensor;
 
+extern uint32_t last_serial_1;
+extern uint32_t last_serial_2;
+
 extern uint32_t serial_1;
 extern uint32_t serial_2;
 
@@ -29,7 +33,6 @@ int sensor_init_and_read(void);
 void read_sensor_serials(void);
 extern bool     has_sensor_2;
 extern bool     has_soil_sensor;
-extern int16_t  i2c_error_code;
 
 // Soil sensor readings (scaled as noted in sensirion.c)
 extern int16_t  soil_e25;
