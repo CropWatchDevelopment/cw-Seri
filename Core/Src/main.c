@@ -54,6 +54,7 @@
 #define LSI_CAL_LSE_TIMEOUT_MS LSE_STARTUP_TIMEOUT
 #define LSI_CAL_LSI_TIMEOUT_MS 500u
 #define LSI_SCALE_Q 16u
+#define LSI_CAL_SEND_INTERVAL 6u
 #define LSI_CAL_STATUS_OK 0u
 #define LSI_CAL_STATUS_LSE_TIMEOUT 1u
 #define LSI_CAL_STATUS_LSI_TIMEOUT 2u
@@ -101,6 +102,7 @@ lsi_cal_t g_lsi_cal = {
     .valid = 0u,
 };
 static uint8_t g_lsi_cal_status = LSI_CAL_STATUS_OK;
+static uint8_t g_lsi_cal_last_ok = 0u;
 
 // LoRaWAN UART Baud
 //  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa
@@ -204,9 +206,9 @@ static void send_rtc_clock_indicator(void)
     {
         return;
     }
-    uint8_t cal_payload = g_lsi_cal.valid ? 5u : 6u;
+    uint8_t cal_payload = g_lsi_cal_last_ok ? 5u : 6u;
     LoRaWAN_SendHex(&cal_payload, 1, 12);
-    if (!g_lsi_cal.valid && g_lsi_cal_status != LSI_CAL_STATUS_OK)
+    if (!g_lsi_cal_last_ok && g_lsi_cal_status != LSI_CAL_STATUS_OK)
     {
         LoRaWAN_SendHex(&g_lsi_cal_status, 1, 13);
     }
@@ -1075,7 +1077,7 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   MX_RTC_Init();
-  (void)lsi_calibrate_with_lse(&g_lsi_cal);
+  g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
   configWakeupTime();
   MX_I2C1_Init();
   MX_ADC_Init();
@@ -1197,6 +1199,13 @@ int main(void)
             wakes_accum = 0;
             transmission_count++;
             // first_run = false; // Moved to end of block
+
+            if ((transmission_count % LSI_CAL_SEND_INTERVAL) == 0u)
+            {
+                g_lsi_cal_last_ok =
+                    lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
+                configWakeupTime();
+            }
 
             // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
             // Refresh connection flag from the module each cycle to avoid stale state
