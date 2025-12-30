@@ -67,6 +67,7 @@
 #define LSI_CAL_STATUS_WUT_LSI 6u
 #define LSI_CAL_STATUS_TICKS_ZERO 7u
 #define LSI_CAL_STATUS_LSE_DRIVE_FAIL 8u
+#define LSI_CAL_STATUS_HSI_FALLBACK 9u
 #define IWDG_GRACE_SECONDS 10u
 #define IWDG_SAFE_TIMEOUT_PCT 80u
 /* USER CODE END PD */
@@ -506,19 +507,7 @@ static bool lse_start_with_drive(uint32_t drive)
 
 static bool lse_start_with_fallback(void)
 {
-    if (lse_start_with_drive(RCC_LSEDRIVE_HIGH))
-    {
-        return true;
-    }
-    if (lse_start_with_drive(RCC_LSEDRIVE_MEDIUMHIGH))
-    {
-        return true;
-    }
-    if (lse_start_with_drive(RCC_LSEDRIVE_MEDIUMLOW))
-    {
-        return true;
-    }
-    return lse_start_with_drive(RCC_LSEDRIVE_LOW);
+    return lse_start_with_drive(RCC_LSEDRIVE_HIGH);
 }
 
 static bool rtc_select_source_and_init(uint32_t rtc_sel, uint32_t sync_prediv)
@@ -641,6 +630,11 @@ static bool rtc_measure_wut_ticks(uint16_t reload, uint32_t samples,
 bool lsi_calibrate_with_lse(lsi_cal_t *out)
 {
     lsi_cal_t cal = g_lsi_cal;
+    uint32_t ticks_lse = 0u;
+    uint32_t ticks_lsi = 0u;
+    uint32_t f_lsi = 0u;
+    bool use_lse = false;
+
     g_lsi_cal_status = LSI_CAL_STATUS_OK;
     if (cal.f_lsi_hz == 0u)
     {
@@ -652,12 +646,13 @@ bool lsi_calibrate_with_lse(lsi_cal_t *out)
     }
 
     HAL_PWR_EnableBkUpAccess();
-    if (!lse_start_with_fallback())
+    if (lse_start_with_fallback())
+    {
+        use_lse = true;
+    }
+    else
     {
         g_lsi_cal_status = LSI_CAL_STATUS_LSE_DRIVE_FAIL;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
     }
 
     __HAL_RCC_LSI_ENABLE();
@@ -672,74 +667,98 @@ bool lsi_calibrate_with_lse(lsi_cal_t *out)
 
     lsi_cal_timer_start();
 
-    uint32_t ticks_lse = 0u;
-    uint32_t ticks_lsi = 0u;
-
-    if (!rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSE, 255u))
+    if (use_lse)
     {
-        lsi_cal_timer_stop();
-        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
-        (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
-                                         rtc_compute_lsi_synch_prediv());
-        g_lsi_cal_status = LSI_CAL_STATUS_RTC_LSE_INIT;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
-    }
-    if (!rtc_measure_wut_ticks(LSI_CAL_WUT_RELOAD, LSI_CAL_SAMPLES, &ticks_lse))
-    {
-        lsi_cal_timer_stop();
-        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
-        (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
-                                         rtc_compute_lsi_synch_prediv());
-        g_lsi_cal_status = LSI_CAL_STATUS_WUT_LSE;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
+        if (!rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSE, 255u))
+        {
+            g_lsi_cal_status = LSI_CAL_STATUS_RTC_LSE_INIT;
+            use_lse = false;
+        }
+        else if (!rtc_measure_wut_ticks(LSI_CAL_WUT_RELOAD, LSI_CAL_SAMPLES,
+                                        &ticks_lse))
+        {
+            g_lsi_cal_status = LSI_CAL_STATUS_WUT_LSE;
+            use_lse = false;
+        }
     }
 
-    if (!rtc_select_source_and_init(
-            RCC_RTCCLKSOURCE_LSI,
-            rtc_compute_lsi_synch_prediv_hz(cal.f_lsi_hz)))
+    if (use_lse)
     {
-        lsi_cal_timer_stop();
-        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
-        (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
-                                         rtc_compute_lsi_synch_prediv());
-        g_lsi_cal_status = LSI_CAL_STATUS_RTC_LSI_INIT;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
-    }
-    if (!rtc_measure_wut_ticks(LSI_CAL_WUT_RELOAD, LSI_CAL_SAMPLES, &ticks_lsi))
-    {
-        lsi_cal_timer_stop();
-        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
-        (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
-                                         rtc_compute_lsi_synch_prediv());
-        g_lsi_cal_status = LSI_CAL_STATUS_WUT_LSI;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
+        if (!rtc_select_source_and_init(
+                RCC_RTCCLKSOURCE_LSI,
+                rtc_compute_lsi_synch_prediv_hz(cal.f_lsi_hz)))
+        {
+            g_lsi_cal_status = LSI_CAL_STATUS_RTC_LSI_INIT;
+            use_lse = false;
+        }
+        else if (!rtc_measure_wut_ticks(LSI_CAL_WUT_RELOAD, LSI_CAL_SAMPLES,
+                                        &ticks_lsi))
+        {
+            g_lsi_cal_status = LSI_CAL_STATUS_WUT_LSI;
+            use_lse = false;
+        }
+        else if (ticks_lsi == 0u)
+        {
+            g_lsi_cal_status = LSI_CAL_STATUS_TICKS_ZERO;
+            use_lse = false;
+        }
     }
 
-    if (ticks_lsi == 0u)
+    if (use_lse)
     {
-        lsi_cal_timer_stop();
-        __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
-        (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
-                                         rtc_compute_lsi_synch_prediv());
-        g_lsi_cal_status = LSI_CAL_STATUS_TICKS_ZERO;
-        if (out)
-            *out = g_lsi_cal;
-        return false;
+        uint32_t lse_hz = (LSE_VALUE == 0u) ? 32768u : LSE_VALUE;
+        f_lsi =
+            (uint32_t)(((uint64_t)lse_hz * (uint64_t)ticks_lse +
+                        (ticks_lsi / 2u)) /
+                       ticks_lsi);
+        g_lsi_cal_status = LSI_CAL_STATUS_OK;
     }
+    else
+    {
+        if (!rtc_select_source_and_init(
+                RCC_RTCCLKSOURCE_LSI,
+                rtc_compute_lsi_synch_prediv_hz(cal.f_lsi_hz)))
+        {
+            lsi_cal_timer_stop();
+            __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+            (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
+                                             rtc_compute_lsi_synch_prediv());
+            g_lsi_cal_status = LSI_CAL_STATUS_RTC_LSI_INIT;
+            if (out)
+                *out = g_lsi_cal;
+            return false;
+        }
+        if (!rtc_measure_wut_ticks(LSI_CAL_WUT_RELOAD, LSI_CAL_SAMPLES,
+                                   &ticks_lsi))
+        {
+            lsi_cal_timer_stop();
+            __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+            (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
+                                             rtc_compute_lsi_synch_prediv());
+            g_lsi_cal_status = LSI_CAL_STATUS_WUT_LSI;
+            if (out)
+                *out = g_lsi_cal;
+            return false;
+        }
+        if (ticks_lsi == 0u)
+        {
+            lsi_cal_timer_stop();
+            __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
+            (void)rtc_select_source_and_init(RCC_RTCCLKSOURCE_LSI,
+                                             rtc_compute_lsi_synch_prediv());
+            g_lsi_cal_status = LSI_CAL_STATUS_TICKS_ZERO;
+            if (out)
+                *out = g_lsi_cal;
+            return false;
+        }
 
-    uint32_t lse_hz = (LSE_VALUE == 0u) ? 32768u : LSE_VALUE;
-    uint32_t f_lsi =
-        (uint32_t)(((uint64_t)lse_hz * (uint64_t)ticks_lse +
-                    (ticks_lsi / 2u)) /
-                   ticks_lsi);
+        uint32_t tim2_hz = HAL_RCC_GetPCLK1Freq();
+        uint32_t reload = LSI_CAL_WUT_RELOAD + 1u;
+        f_lsi = (uint32_t)(((uint64_t)reload * 16u * tim2_hz +
+                            (ticks_lsi / 2u)) /
+                           ticks_lsi);
+        g_lsi_cal_status = LSI_CAL_STATUS_HSI_FALLBACK;
+    }
 
     cal.f_lsi_hz = f_lsi;
     uint32_t nominal_lsi = (LSI_VALUE == 0u) ? 37000u : LSI_VALUE;
@@ -753,11 +772,11 @@ bool lsi_calibrate_with_lse(lsi_cal_t *out)
     __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
 
     g_lsi_cal = cal;
-    g_lsi_cal_status = LSI_CAL_STATUS_OK;
     if (out)
         *out = cal;
     return true;
 }
+
 
 // Query connection status using ATI 3001 (per Ezurio docs)
 static int lorawan_get_connection_status(UART_HandleTypeDef *huart)
