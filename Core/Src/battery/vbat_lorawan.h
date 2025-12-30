@@ -5,6 +5,8 @@
  * Battery measurement + LoRaWAN DevStatusAns battery encoding
  * - Integer-only, STM32 HAL
  * - Assumes 1M:1M divider (×2), buffered, gated by VBAT_MEAS_EN
+ * - Optional "under load" min measurement using a load-enable GPIO (default: I2C_ENABLE)
+ * - ADC tips: use long sampling time, discard first sample after enabling, and average
  *
  * Configure the macros below for your board.
  */
@@ -27,6 +29,27 @@
 #define VBAT_MEAS_EN_ACTIVE_HIGH 1
 #endif
 
+/* ===== Load-enable pin used to create a known load for the 2nd read ===== */
+#ifndef VBAT_LOAD_EN_GPIO_Port
+#if defined(I2C_ENABLE_GPIO_Port)
+#define VBAT_LOAD_EN_GPIO_Port   I2C_ENABLE_GPIO_Port
+#else
+#define VBAT_LOAD_EN_GPIO_Port   GPIOB
+#endif
+#endif
+
+#ifndef VBAT_LOAD_EN_Pin
+#if defined(I2C_ENABLE_Pin)
+#define VBAT_LOAD_EN_Pin         I2C_ENABLE_Pin
+#else
+#define VBAT_LOAD_EN_Pin         GPIO_PIN_5
+#endif
+#endif
+
+#ifndef VBAT_LOAD_EN_ACTIVE_HIGH
+#define VBAT_LOAD_EN_ACTIVE_HIGH 1
+#endif
+
 /* ===== ADC & reference ===== */
 #ifndef ADC_RES_BITS
 #define ADC_RES_BITS             12
@@ -44,48 +67,57 @@
 #ifndef VBAT_DIV_NUM
 #define VBAT_DIV_NUM             2U
 #endif
+#ifndef VBAT_DIV_DEN
+#define VBAT_DIV_DEN             1U
+#endif
 
 /* ===== Timing / sampling ===== */
 #ifndef VBAT_SETTLE_MS
-#define VBAT_SETTLE_MS           4U         /* op-amp + node settle */
+#define VBAT_SETTLE_MS           20U        /* op-amp + node settle (no C16) */
 #endif
 
 #ifndef VBAT_SAMPLES
-#define VBAT_SAMPLES             8U         /* average count */
+#define VBAT_SAMPLES             16U        /* average count */
 #endif
 
-/* ===== Piecewise mapping thresholds (battery millivolts) ===== */
-#ifndef VBAT_SEG1_MAX_mV
-#define VBAT_SEG1_MAX_mV         3600U      /* 3.60 V: top of plateau */
-#endif
-#ifndef VBAT_SEG1_MIN_mV
-#define VBAT_SEG1_MIN_mV         3300U      /* 3.30 V: end plateau */
-#endif
-#ifndef VBAT_SEG2_MIN_mV
-#define VBAT_SEG2_MIN_mV         2800U      /* 2.80 V: start knee */
-#endif
-#ifndef VBAT_SEG3_MIN_mV
-#define VBAT_SEG3_MIN_mV         2000U      /* 2.00 V: datasheet end-of-life */
+/* ===== Loaded measurement ===== */
+#ifndef VBAT_LOAD_SETTLE_MS
+#define VBAT_LOAD_SETTLE_MS      2U         /* small delay after load enable */
 #endif
 
-/* ===== LoRaWAN scale slices (inclusive) ===== */
-#ifndef LORA_SEG1_MIN
-#define LORA_SEG1_MIN            200U
+#ifndef VBAT_LOAD_SAMPLES
+#define VBAT_LOAD_SAMPLES        16U        /* min sample count under load */
 #endif
-#ifndef LORA_SEG1_MAX
-#define LORA_SEG1_MAX            254U
+
+/* ===== ADC validity thresholds ===== */
+#ifndef VBAT_COUNTS_MIN_VALID
+#define VBAT_COUNTS_MIN_VALID    1U
 #endif
-#ifndef LORA_SEG2_MIN
-#define LORA_SEG2_MIN             50U
+#ifndef VBAT_COUNTS_MAX_VALID
+#define VBAT_COUNTS_MAX_VALID    (ADC_MAX_COUNTS - 1U)
 #endif
-#ifndef LORA_SEG2_MAX
-#define LORA_SEG2_MAX            199U
+
+/* ===== Linear mapping thresholds (battery millivolts) ===== */
+#ifndef VBAT_EMPTY_mV
+#define VBAT_EMPTY_mV            2800U
 #endif
-#ifndef LORA_SEG3_MIN
-#define LORA_SEG3_MIN              1U
+#ifndef VBAT_FULL_mV
+#define VBAT_FULL_mV             3600U
 #endif
-#ifndef LORA_SEG3_MAX
-#define LORA_SEG3_MAX             49U
+
+#ifndef VBAT_LEVEL_MIN
+#define VBAT_LEVEL_MIN           1U
+#endif
+#ifndef VBAT_LEVEL_MAX
+#define VBAT_LEVEL_MAX           254U
+#endif
+
+/* ===== Internal resistance estimate (optional) ===== */
+#ifndef VBAT_LOAD_mA
+#define VBAT_LOAD_mA             34U
+#endif
+#ifndef VBAT_RINT_LIMIT_mOHM
+#define VBAT_RINT_LIMIT_mOHM     0U         /* 0 = disabled */
 #endif
 
 #ifdef __cplusplus
@@ -95,8 +127,11 @@ extern "C" {
 /* Optional: simple cold compensation (set temp_c if you have a sensor). */
 uint16_t vbat_cold_compensation_mv(int16_t temp_c);
 
-/* Measure battery in millivolts via gated divider + buffer. */
-bool     vbat_read_mv(ADC_HandleTypeDef *hadc, uint32_t adc_channel, uint16_t *vbat_mv_out);
+/* Measure idle battery in millivolts via gated divider + buffer. */
+bool     measure_vbat_idle_mV(ADC_HandleTypeDef *hadc, uint32_t adc_channel, uint16_t *vbat_mv_out);
+
+/* Measure minimum battery voltage under a known load. */
+bool     measure_vbat_loaded_min_mV(ADC_HandleTypeDef *hadc, uint32_t adc_channel, uint16_t *vbat_min_mv_out);
 
 /* Map battery (mV + optional temp) to LoRaWAN DevStatusAns Battery (0,1–254,255). */
 uint8_t  lorawan_encode_battery(uint16_t vbat_mv,

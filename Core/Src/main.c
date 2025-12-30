@@ -40,7 +40,9 @@
 // Sleep time in minutes between LoRaWAN transmissions
 #define SLEEP_TIME_MINUTES 1
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
-#define SLEEP_INTERVAL_SECONDS 30
+#define SLEEP_INTERVAL_SECONDS 30u
+#define BATTERY_SEND_INTERVAL_CYCLES 4 // Should be 4400
+#define SENSOR_SEND_INTERVAL_CYCLES 5u //Just over 144 day
 
 #define DEV_EUI "0025CA00000056E3"
 #define JOIN_EUI "0025CA00000055F7"
@@ -123,8 +125,9 @@ static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
-void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort);
+void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response);
 void configWakeupTime(void);
+int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -220,6 +223,15 @@ static void uart2_rx_flush(UART_HandleTypeDef *huart)
 // Helper to send device info (serials + reset reason)
 static void send_device_info_packet(void)
 {
+    GPIO_PinState i2c_prev_state =
+        HAL_GPIO_ReadPin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin);
+    if (i2c_prev_state == GPIO_PIN_RESET)
+    {
+        HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+        HAL_Delay(1000);
+    }
+
+    scan_i2c_bus();
     // Ensure serials are fresh (though they should be stable)
     read_sensor_serials();
 
@@ -236,29 +248,29 @@ static void send_device_info_packet(void)
 
     serial_payload[8] = reset_reason;
 
-    last_sent_sensor++;
+    send_sensor_id_counter++;
 
-    if ((last_serial_1 == serial_1 && last_serial_2 == serial_2) || last_sent_sensor > 99)
+    if ((last_serial_1 != serial_1 && last_serial_2 != serial_2) || send_sensor_id_counter > SENSOR_SEND_INTERVAL_CYCLES)
     {
-        last_sent_sensor = 0;
-        LoRaWAN_SendHex(serial_payload, 9, 9);
+    	last_serial_1 = serial_1;
+    	last_serial_2 = serial_2;
+        send_sensor_id_counter = 0;
+        LoRaWAN_SendHex(serial_payload, 9, 9, false);
+        reset_reason = 0;
+    }
+
+    if (i2c_prev_state == GPIO_PIN_RESET)
+    {
+        HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
     }
 }
 
 static void send_device_battery(void)
 {
-    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-                      GPIO_PIN_SET);
-    HAL_Delay(300);
-
     int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
     uint8_t battery =
         vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
                                 /*external_power_present=*/false);
-
-    // Disable Battery Measurement Pin
-    HAL_GPIO_WritePin(VBAT_MEAS_EN_GPIO_Port, VBAT_MEAS_EN_Pin,
-                      GPIO_PIN_RESET);
 
     lorawan_set_battery_level(&huart2, battery);
 }
@@ -853,7 +865,6 @@ int join(UART_HandleTypeDef *huart)
     if (result == 'O' || error14 == '4')
     {
         is_connected = 1;
-        //        send_device_info_packet();
         return 1;
     }
 
@@ -905,7 +916,7 @@ static void LoRaWAN_set_fport(int fPort)
     }
 }
 
-void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
+void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response)
 {
     static const char HEX[16] = "0123456789ABCDEF";
     static const char prefix[] = "AT+SEND \"";
@@ -951,7 +962,7 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
     if (HAL_UART_Transmit(&huart2, txbuf, (uint16_t)idx, 1000) != HAL_OK)
         return;
 
-    return; // This is an early return, maybe remove it!!!!!
+    if (skip_response) return; // This is an early return, maybe remove it!!!!!
 
     // ----- FIXED RECEIVE LOOP -----
     uint8_t rxbuf[256] = {0};
@@ -1210,6 +1221,8 @@ int main(void)
             if (is_connected == 0)
             {
                 join(&huart2);
+                EnterDeepSleepMode();
+                continue;
             }
 
             // if connected, send 5 on successful calibration, 6 on failure
@@ -1217,10 +1230,11 @@ int main(void)
 
             //            // Get I2C Data
             HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-            HAL_Delay(450); // Datasheet says 1mS to power up for the sensors, but wait for passives to stabilize
+            // Datasheet says 1mS to power up for the sensors, but wait for passives to stabilize
+            HAL_Delay(1000);
             scan_i2c_bus();
+            send_device_info_packet();                                               // Grab INFO packet with sensor ID and send if changed.
             int i2c_read_result = sensor_init_and_read();
-            send_device_info_packet();
             HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET); // always disable I2C power after reading
 
             // Format data and send
@@ -1233,31 +1247,31 @@ int main(void)
                 payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
                 payload[2] = (uint8_t)(calculated_hum_1 >> 8);
                 payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-                LoRaWAN_SendHex(payload, 4, 1);
+                LoRaWAN_SendHex(payload, 4, 1, true);
                 break;
             }
             case I2C_SENSOR_1_MISSING:
             {
                 uint8_t code = 1;
-                LoRaWAN_SendHex(&code, 1, 10);
+                LoRaWAN_SendHex(&code, 1, 10, true);
                 break;
             }
             case I2C_SENSOR_2_MISSING:
             {
                 uint8_t code = 2;
-                LoRaWAN_SendHex(&code, 1, 10);
+                LoRaWAN_SendHex(&code, 1, 10, true);
                 break;
             }
             case I2C_SENSOR_1_READ_FAIL:
             {
                 uint8_t code = 1;
-                LoRaWAN_SendHex(&code, 1, 10);
-                break;
+                LoRaWAN_SendHex(&code, 1, 10, true);
+                break;    send_device_info_packet();
             }
             case I2C_SENSOR_2_READ_FAIL:
             {
                 uint8_t code = 2;
-                LoRaWAN_SendHex(&code, 1, 10);
+                LoRaWAN_SendHex(&code, 1, 10, true);
                 break;
             }
             case I2C_READ_ERROR_TEMP_MISMATCH:
@@ -1267,7 +1281,7 @@ int main(void)
 
                 payload[2] = (uint8_t)(calculated_temp_2 >> 8);
                 payload[3] = (uint8_t)(calculated_temp_2 & 0xFF);
-                LoRaWAN_SendHex(payload, 4, 11); // send both dis-agreed values and an error
+                LoRaWAN_SendHex(payload, 4, 11, true); // send both dis-agreed values and an error
                 break;
             }
             default:
@@ -1275,11 +1289,18 @@ int main(void)
                 break;
             }
 
+            send_battery_counter++;
+            if (send_battery_counter >= BATTERY_SEND_INTERVAL_CYCLES)
+            {
+                send_battery_counter = 0;
+                send_device_battery();
+            }
+
             first_run = false;
         }
         // Always go back to deep sleep to allow next RTC wake
         EnterDeepSleepMode();
-        //            HAL_Delay(5000);
+//                    HAL_Delay(5000);
 
         //    HAL_Delay(60000);
     }

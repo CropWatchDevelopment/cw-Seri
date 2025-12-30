@@ -51,8 +51,8 @@ uint16_t calculated_hum_2;
 uint32_t serial_1 = 0;
 uint32_t serial_2 = 0;
 
-uint32_t last_serial_1 = 0; // Last Sensor 1 value
-uint32_t last_serial_2 = 0; // Last Sensor 2 value
+uint32_t last_serial_1 = -1; // Last Sensor 1 value
+uint32_t last_serial_2 = -1; // Last Sensor 2 value
 
 int16_t i2c_result = 0;
 
@@ -128,8 +128,6 @@ int sensor_init_and_read(void)
         sht4x_init(SHT40_I2C_ADDR_46);
         if (sht4x_measure_high_precision_ticks(&temp_ticks_2, &hum_ticks_2) != I2C_READ_SUCCESS) return I2C_SENSOR_2_READ_FAIL; // hard fault on read
     }
-    // Power down sensors ASAP! (will happen again later too just for safety)
-    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
     // Convert using exact integer math with rounding (centi-units)
     calculated_temp_1 = sht4x_temp_centi_from_ticks(temp_ticks_1);  // °C×100
