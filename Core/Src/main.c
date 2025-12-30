@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "battery/vbat_lorawan.h"
+#include "watchdog.h"
 #include "sensirion/sensirion.h"
 /* USER CODE END Includes */
 
@@ -38,7 +39,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 // Sleep time in minutes between LoRaWAN transmissions
-#define SLEEP_TIME_MINUTES 1
+#define SLEEP_TIME_MINUTES 10u
 // Base sleep interval length (seconds) for each STOP cycle (RTC wake-up)
 #define SLEEP_INTERVAL_SECONDS 30u
 #define BATTERY_SEND_INTERVAL_CYCLES 4 // Should be 4400
@@ -66,6 +67,8 @@
 #define LSI_CAL_STATUS_WUT_LSI 6u
 #define LSI_CAL_STATUS_TICKS_ZERO 7u
 #define LSI_CAL_STATUS_LSE_DRIVE_FAIL 8u
+#define IWDG_GRACE_SECONDS 10u
+#define IWDG_SAFE_TIMEOUT_PCT 80u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -96,10 +99,9 @@ static bool first_run = true;
 static uint16_t send_battery_counter = 0;
 static uint16_t send_sensor_id_counter = 0;
 static bool sensor_changed = true;
-// Number of wakeups per transmission cycle (ceil division to avoid truncation)
-static const uint16_t WAKEUPS_PER_CYCLE =
-    (uint16_t)((SLEEP_TIME_MINUTES * 60u + (SLEEP_INTERVAL_SECONDS - 1u)) /
-               SLEEP_INTERVAL_SECONDS);
+// Actual wake interval after watchdog safety clamp.
+static uint32_t g_wakeup_interval_seconds = SLEEP_INTERVAL_SECONDS;
+static uint16_t g_wakeups_per_cycle = 0u;
 
 lsi_cal_t g_lsi_cal = {
     .f_lsi_hz = LSI_VALUE,
@@ -126,8 +128,9 @@ static void MX_ADC_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response);
-void configWakeupTime(void);
+bool configWakeupTime(void);
 int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level);
+static void usart2_recover_after_stop(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -397,6 +400,54 @@ static uint32_t lsi_get_hz(const lsi_cal_t *cal)
     return (LSI_VALUE == 0u) ? 37000u : LSI_VALUE;
 }
 
+static uint32_t lsi_hz_for_watchdog(void)
+{
+    uint32_t measured = lsi_get_hz(&g_lsi_cal);
+    uint32_t nominal = (LSI_VALUE == 0u) ? 37000u : LSI_VALUE;
+    return (measured < nominal) ? nominal : measured;
+}
+
+static uint16_t compute_wakeups_per_cycle(uint32_t interval_seconds)
+{
+    if (interval_seconds == 0u)
+    {
+        interval_seconds = 1u;
+    }
+    uint32_t total = (uint32_t)SLEEP_TIME_MINUTES * 60u;
+    return (uint16_t)((total + interval_seconds - 1u) / interval_seconds);
+}
+
+static uint32_t compute_safe_sleep_seconds(uint32_t watchdog_timeout_ms)
+{
+    if (watchdog_timeout_ms == 0u)
+    {
+        return SLEEP_INTERVAL_SECONDS;
+    }
+
+    uint32_t safe_ms =
+        (watchdog_timeout_ms * IWDG_SAFE_TIMEOUT_PCT) / 100u;
+    uint32_t safe_sec = safe_ms / 1000u;
+    if (safe_sec == 0u)
+    {
+        safe_sec = 1u;
+    }
+    if (safe_sec > SLEEP_INTERVAL_SECONDS)
+    {
+        safe_sec = SLEEP_INTERVAL_SECONDS;
+    }
+    return safe_sec;
+}
+
+static void update_wakeup_schedule(uint32_t interval_seconds)
+{
+    if (interval_seconds == 0u)
+    {
+        interval_seconds = 1u;
+    }
+    g_wakeup_interval_seconds = interval_seconds;
+    g_wakeups_per_cycle = compute_wakeups_per_cycle(interval_seconds);
+}
+
 static uint32_t rtc_compute_lsi_synch_prediv_hz(uint32_t lsi_hz)
 {
     const uint32_t async_div = 128u; // (AsynchPrediv + 1)
@@ -418,6 +469,7 @@ static bool lsi_wait_ready(uint32_t timeout_ms)
     uint32_t t0 = HAL_GetTick();
     while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET)
     {
+        watchdog_kick();
         if ((HAL_GetTick() - t0) > timeout_ms)
         {
             return false;
@@ -431,6 +483,7 @@ static bool lse_wait_ready(uint32_t timeout_ms)
     uint32_t t0 = HAL_GetTick();
     while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
     {
+        watchdog_kick();
         if ((HAL_GetTick() - t0) > timeout_ms)
         {
             return false;
@@ -548,6 +601,7 @@ static bool rtc_measure_wut_ticks(uint16_t reload, uint32_t samples,
         uint32_t t0 = HAL_GetTick();
         while (__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF) == 0U)
         {
+            watchdog_kick();
             if ((HAL_GetTick() - t0) > LSI_CAL_TIMEOUT_MS)
             {
                 (void)HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
@@ -842,6 +896,7 @@ int join(UART_HandleTypeDef *huart)
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < 35000)
     {
+        watchdog_kick();
         uint16_t chunk = 0;
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
                                      sizeof(rxbuf) - total_rcv - 1, &chunk,
@@ -977,6 +1032,7 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip
 
     while ((HAL_GetTick() - start) < overall_to_ms)
     {
+        watchdog_kick();
         // Stop if we filled the buffer
         if (total >= sizeof(rxbuf) - 1)
             break;
@@ -1087,7 +1143,19 @@ int main(void)
     MX_ADC_Init();
     /* USER CODE BEGIN 2 */
     g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
-    configWakeupTime();
+    uint32_t wdg_actual_ms = 0u;
+    uint32_t wdg_desired_ms =
+        (SLEEP_INTERVAL_SECONDS + IWDG_GRACE_SECONDS) * 1000u;
+    if (watchdog_init(wdg_desired_ms, lsi_hz_for_watchdog(), &wdg_actual_ms))
+    {
+        update_wakeup_schedule(compute_safe_sleep_seconds(wdg_actual_ms));
+    }
+    else
+    {
+        update_wakeup_schedule(SLEEP_INTERVAL_SECONDS);
+    }
+    watchdog_kick();
+    (void)configWakeupTime();
     // Capture reset reason early
     reset_reason = GetResetSource();
 
@@ -1179,6 +1247,7 @@ int main(void)
 
         /* USER CODE BEGIN 3 */
         uint16_t ticks;
+        watchdog_kick();
         __disable_irq();
         ticks = wakeup_counter;
         wakeup_counter = 0;
@@ -1187,9 +1256,9 @@ int main(void)
         wakes_accum += ticks;
 
         // dbg_print_u32("Loop:wakes_accum", wakes_accum);
-        // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+        // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", g_wakeups_per_cycle);
 
-        bool do_transmit = first_run || (wakes_accum >= WAKEUPS_PER_CYCLE);
+        bool do_transmit = first_run || (wakes_accum >= g_wakeups_per_cycle);
 
         if (do_transmit)
         {
@@ -1202,10 +1271,23 @@ int main(void)
             {
                 g_lsi_cal_last_ok =
                     lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
-                configWakeupTime();
+                if (g_lsi_cal_last_ok)
+                {
+                    uint32_t wdg_actual_ms = 0u;
+                    uint32_t wdg_desired_ms =
+                        (SLEEP_INTERVAL_SECONDS + IWDG_GRACE_SECONDS) * 1000u;
+                    if (watchdog_update(wdg_desired_ms, lsi_hz_for_watchdog(),
+                                        &wdg_actual_ms))
+                    {
+                        update_wakeup_schedule(
+                            compute_safe_sleep_seconds(wdg_actual_ms));
+                    }
+                }
+                watchdog_kick();
+                (void)configWakeupTime();
             }
 
-            // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
+            // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", g_wakeups_per_cycle);
             // Refresh connection flag from the module each cycle to avoid stale state
             int link_state = lorawan_get_connection_status(&huart2);
             if (link_state == 1)
@@ -1534,7 +1616,7 @@ static void MX_USART2_UART_Init(void)
         Error_Handler();
     }
     /* USER CODE BEGIN USART2_Init 2 */
-
+    /* Build LLM for Ezurio Module */
     /* USER CODE END USART2_Init 2 */
 }
 
@@ -1582,6 +1664,33 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+static void restore_from_stop(void)
+{
+    /* Resume SysTick for timeouts used during clock reconfiguration */
+    HAL_ResumeTick();
+    watchdog_kick();
+
+    /* Upon wake-up, the system clock needs to be reconfigured */
+    SystemClock_Config();
+
+    /* Re-enable peripheral clocks */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    __HAL_RCC_USART2_CLK_ENABLE();
+
+    /* Restore GPIO configuration for normal operation */
+    MX_GPIO_Init();
+
+    /* Re-initialize peripherals with proper sequence */
+    MX_I2C1_Init();
+    usart2_recover_after_stop();
+
+    /* Add longer delay for UART stabilization */
+    HAL_Delay(100);
+    watchdog_kick();
+}
+
 // Compute wakeup reload value for LSI-driven RTC.
 static uint32_t rtc_compute_wakeup_reload(uint32_t seconds)
 {
@@ -1604,11 +1713,11 @@ uint32_t lsi_seconds_to_wut_reload(const lsi_cal_t *cal, uint32_t seconds)
     return (uint32_t)(raw - 1u);
 }
 
-void configWakeupTime()
+bool configWakeupTime()
 {
     // Optional visual indicator that we (re)armed the wake-up
     uint32_t wakeup_timer_value =
-        rtc_compute_wakeup_reload((uint32_t)SLEEP_INTERVAL_SECONDS);
+        rtc_compute_wakeup_reload(g_wakeup_interval_seconds);
     HAL_StatusTypeDef st = HAL_ERROR;
 
     for (int attempt = 0; attempt < 3 && st != HAL_OK; ++attempt)
@@ -1633,12 +1742,14 @@ void configWakeupTime()
         st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value,
                                          RTC_WAKEUPCLOCK_RTCCLK_DIV16);
     }
+    return (st == HAL_OK);
 }
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
 {
     /* Increment counter - process LoRaWAN based on SLEEP_TIME_MINUTES setting */
 
     wakeup_counter++;
+    watchdog_kick();
 
     /* Clear the wake-up timer flag to acknowledge the interrupt */
     __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(hrtc, RTC_FLAG_WUTF);
@@ -1745,35 +1856,20 @@ void EnterDeepSleepMode(void)
     __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
 
     /* Restart the RTC wake-up timer for next wake-up */
-    configWakeupTime();
+    if (!configWakeupTime())
+    {
+        restore_from_stop();
+        return;
+    }
 
     /* Enter STOP Mode with Low Power Regulator */
+    watchdog_kick();
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
     /* === DEVICE IS NOW IN DEEP SLEEP === */
     /* === WAKE UP OCCURS HERE === */
 
-    /* Resume SysTick for timeouts used during clock reconfiguration */
-    HAL_ResumeTick();
-
-    /* Upon wake-up, the system clock needs to be reconfigured */
-    SystemClock_Config();
-
-    /* Re-enable peripheral clocks */
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_I2C1_CLK_ENABLE();
-    __HAL_RCC_USART2_CLK_ENABLE();
-
-    /* Restore GPIO configuration for normal operation */
-    MX_GPIO_Init();
-
-    /* Re-initialize peripherals with proper sequence */
-    MX_I2C1_Init();
-    usart2_recover_after_stop();
-
-    /* Add longer delay for UART stabilization */
-    HAL_Delay(100);
+    restore_from_stop();
 }
 
 /* USER CODE END 4 */
