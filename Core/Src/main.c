@@ -44,7 +44,7 @@
 #define BATTERY_SEND_INTERVAL_CYCLES 4 // Should be 4400
 #define SENSOR_SEND_INTERVAL_CYCLES 5u //Just over 144 day
 
-#define DEV_EUI "0025CA00000056E3"
+#define DEV_EUI "0025CA00000056F7"
 #define JOIN_EUI "0025CA00000055F7"
 
 #define LSI_CAL_WUT_RELOAD 2047u
@@ -1083,12 +1083,11 @@ int main(void)
     MX_GPIO_Init();
     MX_USART2_UART_Init();
     MX_RTC_Init();
-    g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
-    configWakeupTime();
     MX_I2C1_Init();
     MX_ADC_Init();
     /* USER CODE BEGIN 2 */
-
+    g_lsi_cal_last_ok = lsi_calibrate_with_lse(&g_lsi_cal) ? 1u : 0u;
+    configWakeupTime();
     // Capture reset reason early
     reset_reason = GetResetSource();
 
