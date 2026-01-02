@@ -22,6 +22,7 @@
 #include "stm32l0xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdbool.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,7 +42,8 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN PV */
-
+/* Alarm A fired flag - set in ISR, cleared in main after processing */
+volatile bool g_alarm_fired = false;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -69,7 +71,7 @@ extern RTC_HandleTypeDef hrtc;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-  /* No LSE/CSS handling; LSE is used only for calibration. */
+  /* No LSE/CSS handling; LSE is used for RTC scheduling. */
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
   /* Return immediately. */
@@ -144,18 +146,42 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
-  * @brief This function handles RTC global interrupt through EXTI lines 17, 19 and 20.
+  * @brief This function handles RTC global interrupt through EXTI lines 17, 19 and 20 and LSE CSS interrupt through EXTI line 19.
   */
 void RTC_IRQHandler(void)
 {
   /* USER CODE BEGIN RTC_IRQn 0 */
+  /*
+   * Handle RTC Alarm A interrupt (EXTI line 17).
+   * We use Alarm A for periodic scheduling. Set flag and clear interrupt.
+   */
+  if (__HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
+  {
+    g_alarm_fired = true;
+    /* Clear RTC Alarm A flag */
+    __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
+    /* Clear EXTI line 17 (RTC Alarm) pending bit */
+    __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
+  }
   /* USER CODE END RTC_IRQn 0 */
-  HAL_RTCEx_WakeUpTimerIRQHandler(&hrtc);
+  HAL_RTC_AlarmIRQHandler(&hrtc);
   /* USER CODE BEGIN RTC_IRQn 1 */
 
   /* USER CODE END RTC_IRQn 1 */
 }
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief  RTC Alarm A Event Callback (called from HAL if using HAL_RTC_AlarmIRQHandler)
+  * @param  hrtc: RTC handle
+  * @retval None
+  */
+void HAL_RTC_AlarmAEventCallback(RTC_HandleTypeDef *hrtc_cb)
+{
+    (void)hrtc_cb;
+    g_alarm_fired = true;
+    /* Flags already cleared in RTC_IRQHandler or by HAL; keep ISR minimal */
+}
 
 /* USER CODE END 1 */

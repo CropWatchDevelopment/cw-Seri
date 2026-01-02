@@ -4,8 +4,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/*
+ * Initialize watchdog with desired timeout.
+ * lsi_hz: Use LSI_MAX (56000) for worst-case safety, or 0 to default to max.
+ */
 bool watchdog_init(uint32_t desired_timeout_ms, uint32_t lsi_hz,
                    uint32_t *actual_timeout_ms);
+
+/*
+ * Initialize watchdog for >= 90 second timeout at max LSI.
+ * Uses maximum reload value for longest possible timeout.
+ * Returns actual timeout in ms via pointer if provided.
+ */
+bool watchdog_init_90s(uint32_t *actual_timeout_ms);
+
 bool watchdog_update(uint32_t desired_timeout_ms, uint32_t lsi_hz,
                      uint32_t *actual_timeout_ms);
 void watchdog_kick(void);

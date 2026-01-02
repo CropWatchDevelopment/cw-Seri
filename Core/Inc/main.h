@@ -37,12 +37,15 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-typedef struct
-{
-    uint32_t f_lsi_hz;
-    uint32_t scale_q16; // (LSI nominal / measured) in Q16.16
-    uint8_t valid;
-} lsi_cal_t;
+/* RTC calendar structure for alarm scheduling (BIN format) */
+typedef struct {
+    uint8_t year;    /* 0-99 (offset from 2000) */
+    uint8_t month;   /* 1-12 */
+    uint8_t day;     /* 1-31 */
+    uint8_t hours;   /* 0-23 */
+    uint8_t minutes; /* 0-59 */
+    uint8_t seconds; /* 0-59 */
+} rtc_calendar_t;
 
 /* USER CODE END ET */
 
@@ -60,9 +63,14 @@ typedef struct
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-bool lsi_calibrate_with_lse(lsi_cal_t *out);
-uint32_t lsi_seconds_to_wut_reload(const lsi_cal_t *cal, uint32_t seconds);
-extern lsi_cal_t g_lsi_cal;
+/* RTC Alarm A based scheduling functions */
+bool rtc_init_once(void);
+void rtc_read_now(rtc_calendar_t *now);
+void rtc_compute_next_alarm_fixed_grid(const rtc_calendar_t *now, rtc_calendar_t *next_alarm);
+bool rtc_arm_alarm_a(const rtc_calendar_t *alarm_time);
+
+/* Alarm flag - set in ISR, cleared in main loop */
+extern volatile bool g_alarm_fired;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
@@ -74,16 +82,6 @@ extern lsi_cal_t g_lsi_cal;
 #define VBAT_MEAS_EN_GPIO_Port GPIOB
 #define I2C_ENABLE_Pin GPIO_PIN_5
 #define I2C_ENABLE_GPIO_Port GPIOB
-
-// I2C Error Codes
-#define I2C_READ_SUCCESS 0
-#define I2C_SENSOR_1_MISSING -1
-#define I2C_SENSOR_2_MISSING -2
-#define I2C_BOTH_SENSORS_MISSING -3
-#define I2C_SENSOR_1_READ_FAIL -4
-#define I2C_SENSOR_2_READ_FAIL -5
-#define I2C_READ_ERROR_TEMP_MISMATCH -6
-#define I2C_READ_ERROR_HUMI_MISMATCH -7
 
 /* USER CODE BEGIN Private defines */
 

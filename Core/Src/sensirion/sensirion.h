@@ -2,6 +2,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* I2C sensor read result codes */
+typedef enum {
+    I2C_READ_SUCCESS = 0,
+    I2C_SENSOR_1_MISSING,
+    I2C_SENSOR_2_MISSING,
+    I2C_SENSOR_1_READ_FAIL,
+    I2C_SENSOR_2_READ_FAIL,
+    I2C_READ_ERROR_TEMP_MISMATCH
+} i2c_read_result_t;
 
 // Converted values (centi-units):
 //  - Temperature: °C × 100  (e.g., 2345 => 23.45 °C)
