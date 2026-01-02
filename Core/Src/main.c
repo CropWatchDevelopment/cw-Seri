@@ -105,7 +105,6 @@ static bool first_run = true;
 
 static uint16_t send_battery_counter = 0;
 static uint16_t send_sensor_id_counter = 0;
-static bool sensor_changed = true;
 
 /* Next scheduled alarm time (persisted across cycles) */
 static rtc_calendar_t g_next_alarm = {0};

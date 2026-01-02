@@ -76,6 +76,10 @@ extern volatile bool g_alarm_fired;
 /* Private defines -----------------------------------------------------------*/
 #define ADC_IN0_Pin GPIO_PIN_0
 #define ADC_IN0_GPIO_Port GPIOA
+#define LoRaWAN_TX_Pin GPIO_PIN_2
+#define LoRaWAN_TX_GPIO_Port GPIOA
+#define LoRaWAN_RX_Pin GPIO_PIN_3
+#define LoRaWAN_RX_GPIO_Port GPIOA
 #define DBG_LED_Pin GPIO_PIN_5
 #define DBG_LED_GPIO_Port GPIOA
 #define VBAT_MEAS_EN_Pin GPIO_PIN_0
