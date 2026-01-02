@@ -2,6 +2,7 @@
 #include "sensirion_common.h"
 #include "sensirion_config.h"
 #include "sensirion_i2c_hal.h"
+#include "watchdog.h"
 
 extern I2C_HandleTypeDef hi2c1;
 
@@ -16,12 +17,16 @@ void sensirion_i2c_hal_free(void) {
 }
 
 int8_t sensirion_i2c_hal_read(uint8_t address, uint8_t* data, uint8_t count) {
+    watchdog_kick();
     HAL_StatusTypeDef status = HAL_I2C_Master_Receive(&hi2c1, (uint16_t)(address << 1), data, count, 1000);
+    watchdog_kick();
     return (status == HAL_OK) ? 0 : -1;
 }
 
 int8_t sensirion_i2c_hal_write(uint8_t address, const uint8_t* data, uint8_t count) {
+    watchdog_kick();
     HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(&hi2c1, (uint16_t)(address << 1), (uint8_t*)data, count, 1000);
+    watchdog_kick();
     return (status == HAL_OK) ? 0 : -1;
 }
 
@@ -33,5 +38,10 @@ void sensirion_i2c_hal_sleep_usec(uint32_t useconds) {
     if (HAL_GetHalVersion() < 0x01010100) {
         msec++;
     }
-    HAL_Delay(msec);
+    while (msec > 0u) {
+        uint32_t step = (msec > 200u) ? 200u : msec;
+        watchdog_kick();
+        HAL_Delay(step);
+        msec -= step;
+    }
 }

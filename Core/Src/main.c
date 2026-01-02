@@ -41,7 +41,7 @@
 // Sleep time in seconds between wake cycles (clamped by IWDG at runtime)
 #define SLEEP_TIME_SECONDS_DEFAULT 15u
 // How often to send (minutes). Wake happens more often than this.
-#define SEND_INTERVAL_MINUTES 10u
+#define SEND_INTERVAL_MINUTES 3u
 #define SLEEP_INTERVAL_MARGIN_SECONDS 3u
 #define BATTERY_SEND_INTERVAL_CYCLES 4500 // Should be 4400
 #define SENSOR_SEND_INTERVAL_CYCLES 5u //Just over 144 day
@@ -134,12 +134,14 @@ int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level);
 static void usart2_recover_after_stop(void);
 static void restore_from_stop(void);
 static uint32_t compute_sleep_interval_seconds(uint32_t wdg_actual_ms);
+static void rtc_clear_backup_state(void);
 static bool rtc_calendar_to_epoch(const rtc_calendar_t *cal, uint32_t *epoch_out);
 static bool rtc_epoch_to_calendar(uint32_t epoch, rtc_calendar_t *cal);
 static bool rtc_load_next_alarm_bkp(rtc_calendar_t *alarm);
 static void rtc_store_next_alarm_bkp(const rtc_calendar_t *alarm);
 static bool rtc_load_next_send_bkp(uint32_t *epoch_out);
 static void rtc_store_next_send_bkp(uint32_t epoch);
+static bool rtc_arm_alarm_a_with_retry(const rtc_calendar_t *alarm_time);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -1078,10 +1080,8 @@ int main(void)
         rtc_compute_next_alarm_fixed_grid(&now, &g_next_alarm);
         g_next_alarm_valid = true;
         rtc_store_next_alarm_bkp(&g_next_alarm);
-        if (!rtc_arm_alarm_a(&g_next_alarm))
+        if (!rtc_arm_alarm_a_with_retry(&g_next_alarm))
         {
-            watchdog_kick();
-            HAL_Delay(1000);
             continue;
         }
         EnterDeepSleepMode();
@@ -1118,7 +1118,14 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
-    Error_Handler();
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
+    {
+      /* LSE not ready; keep HSI running and let rtc_init_once handle LSE */
+    }
+    else
+    {
+      Error_Handler();
+    }
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
@@ -1141,7 +1148,20 @@ void SystemClock_Config(void)
   PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
-    Error_Handler();
+    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
+    {
+      PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1;
+      PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
+      PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+      if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+      {
+        Error_Handler();
+      }
+    }
+    else
+    {
+      Error_Handler();
+    }
   }
 }
 
@@ -1258,6 +1278,14 @@ static void MX_RTC_Init(void)
 {
 
   /* USER CODE BEGIN RTC_Init 0 */
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
+  {
+    return;
+  }
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET)
+  {
+    return;
+  }
 
   /* USER CODE END RTC_Init 0 */
 
@@ -1533,6 +1561,15 @@ static uint32_t compute_sleep_interval_seconds(uint32_t wdg_actual_ms)
     return safe_seconds;
 }
 
+static void rtc_clear_backup_state(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_MAGIC_REG, 0u);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_NEXT_ALARM_EPOCH_REG, 0u);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_NEXT_SEND_EPOCH_REG, 0u);
+}
+
 static bool rtc_calendar_to_epoch(const rtc_calendar_t *cal, uint32_t *epoch_out)
 {
     if (cal == NULL || epoch_out == NULL)
@@ -1648,6 +1685,14 @@ bool rtc_init_once(void)
     uint32_t magic = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_MAGIC_REG);
     if (magic == RTC_BKP_MAGIC_VALUE)
     {
+        if ((__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET) ||
+            (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET))
+        {
+            rtc_clear_backup_state();
+            HAL_RCCEx_DisableLSECSS();
+            return false;
+        }
+
         /*
          * RTC was previously initialized. Do NOT reset backup domain.
          * Just ensure RTC handle is configured for use.
@@ -1667,6 +1712,10 @@ bool rtc_init_once(void)
         /* Ensure Alarm A NVIC is enabled */
         HAL_NVIC_SetPriority(RTC_IRQn, 0, 0);
         HAL_NVIC_EnableIRQ(RTC_IRQn);
+
+        __HAL_RCC_CLEAR_IT(RCC_IT_LSECSS);
+        __HAL_RCC_LSECSS_EXTI_CLEAR_FLAG();
+        HAL_RCCEx_EnableLSECSS_IT();
 
         return true;
     }
@@ -1754,6 +1803,10 @@ bool rtc_init_once(void)
     /* Enable Alarm A interrupt in NVIC */
     HAL_NVIC_SetPriority(RTC_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(RTC_IRQn);
+
+    __HAL_RCC_CLEAR_IT(RCC_IT_LSECSS);
+    __HAL_RCC_LSECSS_EXTI_CLEAR_FLAG();
+    HAL_RCCEx_EnableLSECSS_IT();
 
     return true;
 }
@@ -1879,6 +1932,22 @@ void rtc_compute_next_alarm_fixed_grid(const rtc_calendar_t *now, rtc_calendar_t
     {
         calendar_add_seconds(next_alarm, interval);
     }
+}
+
+static bool rtc_arm_alarm_a_with_retry(const rtc_calendar_t *alarm_time)
+{
+    for (uint8_t attempt = 0; attempt < 3u; attempt++)
+    {
+        if (rtc_arm_alarm_a(alarm_time))
+        {
+            return true;
+        }
+        watchdog_kick();
+        HAL_Delay(100);
+    }
+
+    NVIC_SystemReset();
+    return false;
 }
 
 /**
@@ -2109,6 +2178,13 @@ void Error_Handler(void)
     //  }
     HAL_NVIC_SystemReset();
   /* USER CODE END Error_Handler_Debug */
+}
+
+void HAL_RCCEx_LSECSS_Callback(void)
+{
+    rtc_clear_backup_state();
+    HAL_RCCEx_DisableLSECSS();
+    NVIC_SystemReset();
 }
 #ifdef USE_FULL_ASSERT
 /**

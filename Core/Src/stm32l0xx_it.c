@@ -151,6 +151,12 @@ void SysTick_Handler(void)
 void RTC_IRQHandler(void)
 {
   /* USER CODE BEGIN RTC_IRQn 0 */
+  if (__HAL_RCC_LSECSS_EXTI_GET_FLAG() != 0U)
+  {
+    __HAL_RCC_LSECSS_EXTI_CLEAR_FLAG();
+    HAL_RCCEx_LSECSS_IRQHandler();
+  }
+
   /*
    * Handle RTC Alarm A interrupt (EXTI line 17).
    * We use Alarm A for periodic scheduling. Set flag and clear interrupt.
