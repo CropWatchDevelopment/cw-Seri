@@ -11,6 +11,9 @@
 bool watchdog_init(uint32_t desired_timeout_ms, uint32_t lsi_hz,
                    uint32_t *actual_timeout_ms);
 
+/* Mark watchdog as started (e.g., when initialized by HAL). */
+void watchdog_mark_started(void);
+
 /*
  * Initialize watchdog for >= 90 second timeout at max LSI.
  * Uses maximum reload value for longest possible timeout.

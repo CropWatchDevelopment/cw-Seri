@@ -45,6 +45,16 @@
 
 static bool g_watchdog_started = false;
 
+static uint32_t iwdg_current_reload(void)
+{
+    return (IWDG->RLR & IWDG_RELOAD_MAX);
+}
+
+void watchdog_mark_started(void)
+{
+    g_watchdog_started = true;
+}
+
 static void iwdg_wait_update(uint32_t mask)
 {
     uint32_t guard = 0xFFFFu;
@@ -109,6 +119,16 @@ static void iwdg_apply_reload(uint32_t reload)
 bool watchdog_init(uint32_t desired_timeout_ms, uint32_t lsi_hz,
                    uint32_t *actual_timeout_ms)
 {
+    if (g_watchdog_started)
+    {
+        if (actual_timeout_ms != NULL)
+        {
+            uint32_t reload = iwdg_current_reload();
+            *actual_timeout_ms = iwdg_compute_timeout_ms(reload, lsi_hz);
+        }
+        return true;
+    }
+
     uint32_t reload = iwdg_compute_reload(desired_timeout_ms, lsi_hz);
     iwdg_apply_reload(reload);
     IWDG->KR = IWDG_KEY_START;
@@ -150,6 +170,16 @@ void watchdog_kick(void)
 
 bool watchdog_init_90s(uint32_t *actual_timeout_ms)
 {
+    if (g_watchdog_started)
+    {
+        if (actual_timeout_ms != NULL)
+        {
+            uint32_t reload = iwdg_current_reload();
+            *actual_timeout_ms = iwdg_compute_timeout_ms(reload, LSI_MAX_HZ);
+        }
+        return true;
+    }
+
     /*
      * Configure watchdog for maximum timeout using max reload.
      * At LSI_MAX_HZ (56kHz): timeout = (4096 * 256) / 56000 ≈ 18.7s

@@ -41,10 +41,10 @@
 // Sleep time in seconds between wake cycles (clamped by IWDG at runtime)
 #define SLEEP_TIME_SECONDS_DEFAULT 15u
 // How often to send (minutes). Wake happens more often than this.
-#define SEND_INTERVAL_MINUTES 3u
+#define SEND_INTERVAL_MINUTES 10u
 #define SLEEP_INTERVAL_MARGIN_SECONDS 3u
 #define BATTERY_SEND_INTERVAL_CYCLES 4500 // Should be 4400
-#define SENSOR_SEND_INTERVAL_CYCLES 5u //Just over 144 day
+#define SENSOR_SEND_INTERVAL_CYCLES 144u //Just over 144 day
 
 #define DEV_EUI "0025CA00000056F7"
 #define JOIN_EUI "0025CA00000055F7"
@@ -86,6 +86,8 @@ ADC_HandleTypeDef hadc;
 
 I2C_HandleTypeDef hi2c1;
 
+IWDG_HandleTypeDef hiwdg;
+
 RTC_HandleTypeDef hrtc;
 
 UART_HandleTypeDef huart2;
@@ -94,6 +96,8 @@ UART_HandleTypeDef huart2;
 
 int is_connected = 0;
 static uint8_t reset_reason = 0xFF; // Store reset reason
+
+static volatile bool g_allow_lse_fail = false;
 
 static uint32_t transmission_count = 0;      // Total transmissions sent
 // Flag to ensure first transmission happens immediately
@@ -127,6 +131,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
+static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response);
@@ -142,6 +147,7 @@ static void rtc_store_next_alarm_bkp(const rtc_calendar_t *alarm);
 static bool rtc_load_next_send_bkp(uint32_t *epoch_out);
 static void rtc_store_next_send_bkp(uint32_t epoch);
 static bool rtc_arm_alarm_a_with_retry(const rtc_calendar_t *alarm_time);
+static void rcc_apply_periph_fallback_if_lse_missing(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -769,6 +775,7 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
+  g_allow_lse_fail = true;
 
   /* USER CODE END Init */
 
@@ -776,6 +783,9 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  g_allow_lse_fail = false;
+  rcc_apply_periph_fallback_if_lse_missing();
+
   /* Keep LSE drive strength at HIGH for reliable crystal operation */
   __HAL_RCC_PWR_CLK_ENABLE();
   HAL_PWR_EnableBkUpAccess();
@@ -789,6 +799,7 @@ int main(void)
   MX_RTC_Init();
   MX_I2C1_Init();
   MX_ADC_Init();
+  MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
     /* Initialize RTC with LSE (only once, guarded by BKP magic) */
@@ -1111,21 +1122,16 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_LSE;
   RCC_OscInitStruct.LSEState = RCC_LSE_ON;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
-    {
-      /* LSE not ready; keep HSI running and let rtc_init_once handle LSE */
-    }
-    else
-    {
-      Error_Handler();
-    }
+    Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
@@ -1148,20 +1154,7 @@ void SystemClock_Config(void)
   PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET)
-    {
-      PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1;
-      PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
-      PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
-      if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-      {
-        Error_Handler();
-      }
-    }
-    else
-    {
-      Error_Handler();
-    }
+    Error_Handler();
   }
 }
 
@@ -1266,6 +1259,36 @@ static void MX_I2C1_Init(void)
   /* USER CODE BEGIN I2C1_Init 2 */
 
   /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief IWDG Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_IWDG_Init(void)
+{
+
+  /* USER CODE BEGIN IWDG_Init 0 */
+
+  /* USER CODE END IWDG_Init 0 */
+
+  /* USER CODE BEGIN IWDG_Init 1 */
+
+  /* USER CODE END IWDG_Init 1 */
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+  hiwdg.Init.Window = 4095;
+  hiwdg.Init.Reload = 4095;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN IWDG_Init 2 */
+  watchdog_mark_started();
+
+  /* USER CODE END IWDG_Init 2 */
 
 }
 
@@ -1459,7 +1482,10 @@ static void restore_from_stop(void)
     watchdog_kick();
 
     /* Upon wake-up, the system clock needs to be reconfigured */
+    g_allow_lse_fail = true;
     SystemClock_Config();
+    g_allow_lse_fail = false;
+    rcc_apply_periph_fallback_if_lse_missing();
 
     /* Keep LSE drive strength at HIGH after STOP */
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -1482,6 +1508,22 @@ static void restore_from_stop(void)
     /* Add longer delay for UART stabilization */
     HAL_Delay(100);
     watchdog_kick();
+}
+
+static void rcc_apply_periph_fallback_if_lse_missing(void)
+{
+    if ((__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET) ||
+        (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET))
+    {
+        RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+        PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1;
+        PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
+        PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+        if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+        {
+            Error_Handler();
+        }
+    }
 }
 
 /*============================================================================
@@ -2162,6 +2204,13 @@ void EnterDeepSleepMode(void)
     restore_from_stop();
 }
 
+void HAL_RCCEx_LSECSS_Callback(void)
+{
+    rtc_clear_backup_state();
+    HAL_RCCEx_DisableLSECSS();
+    NVIC_SystemReset();
+}
+
 /* USER CODE END 4 */
 
 /**
@@ -2172,19 +2221,20 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
     /* User can add his own implementation to report the HAL error return state */
+    if (g_allow_lse_fail)
+    {
+        if ((__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET) ||
+            (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET))
+        {
+            return;
+        }
+    }
     __disable_irq();
     //  while (1)
     //  {
     //  }
     HAL_NVIC_SystemReset();
   /* USER CODE END Error_Handler_Debug */
-}
-
-void HAL_RCCEx_LSECSS_Callback(void)
-{
-    rtc_clear_backup_state();
-    HAL_RCCEx_DisableLSECSS();
-    NVIC_SystemReset();
 }
 #ifdef USE_FULL_ASSERT
 /**
