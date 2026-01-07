@@ -1,177 +1,174 @@
 function decodeUplink(input) {
-  let data = {};
-  let warnings = [];
-  let errors = [];
-
-  // Calibration constants (kept from your original)
-  const CAL_EC_SCALE = 1413 / 1706.4; // ≈ 0.828303
-
-  // Reset reason mapping based on YOUR firmware output
-  const resetReasonMap = {
-    0x00: "Unknown/None",
-    0x01: "PIN Reset",
-    0x02: "POR/PDR",
-    0x03: "Software Reset",
-    0x04: "Independent Watchdog",
-    0x05: "Window Watchdog",
-    0x06: "Low Power Reset",
-    0xFF: "Not set / invalid"
+  var data = {
+    error: null // keep explicit for consistency
   };
+  var warnings = [];
+  var errors = []; // must remain an array
 
-  const port10Map = {
+  // Human-readable error map (used by fPort 10, and referenced for 11)
+  var port10Map = {
     0x01: "no sensor detected",
     0x02: "sensor 1 failure",
     0x03: "sensor 2 failure",
-    0x04: "sensor validation failed",
-    0x05: "humidity validation failed"
+    0x04: "sensor validation failed", // sensors disagree
+    0x05: "humidity validation failed" // humidity sensors disagree
   };
 
-  function toInt16(u16) {
-    return u16 > 32767 ? u16 - 65536 : u16;
-  }
-  function toTempC(raw16) {
-    return toInt16(raw16) / 100.0;
-  }
-  function toTempC_T1(raw16) {
-    return (toInt16(raw16) - 5500) / 100.0;
-  }
+  // Reset reason map for fPort 9 byte 8
+  var resetReasonMap = {
+    0x01: "PIN Reset (NRST pin)",
+    0x02: "POR/PDR (Power On Reset)",
+    0x03: "Software Reset",
+    0x04: "Independent Watchdog (IWDG)",
+    0x05: "Window Watchdog (WWDG)",
+    0x06: "Low Power Reset",
+    0x00: "Unknown/None"
+  };
 
-  function readU16BE(bytes, i) {
-    return ((bytes[i] & 0xff) << 8) | (bytes[i + 1] & 0xff);
+  // helper(s)
+  // T2 / legacy temps (no device offset)
+  function toTempC(raw16) {
+    if (raw16 > 32767) raw16 -= 65536; // int16
+    return raw16 / 100.0;              // raw is centi-degrees
   }
-  function readI16BE(bytes, i) {
-    const u = readU16BE(bytes, i);
-    return (u & 0x8000) ? u - 0x10000 : u;
-  }
-  function readU32BE(bytes, i) {
-    return (
-      ((bytes[i] & 0xff) << 24) |
-      ((bytes[i + 1] & 0xff) << 16) |
-      ((bytes[i + 2] & 0xff) << 8) |
-      (bytes[i + 3] & 0xff)
-    ) >>> 0;
-  }
-  function u32ToHex(u32) {
-    return "0x" + (u32 >>> 0).toString(16).toUpperCase().padStart(8, "0");
+  // T1 temps (device adds +5500; remove it here)
+  function toTempC_T1(raw16) {
+    if (raw16 > 32767) raw16 -= 65536; // int16
+    return (raw16 - 5500) / 100.0;     // compensate +5500 then scale
   }
 
   try {
-    // fPort 2: soil sensor
-    if (input.fPort === 2) {
-      if (input.bytes.length < 8) {
-        errors.push("Payload too short on fPort 2 - expected 8 bytes");
-        return { data, warnings, errors };
-      }
-
-      const ec_raw  = readU16BE(input.bytes, 2);
-      const t_raw   = readU16BE(input.bytes, 4);
-      const vwc_raw = readU16BE(input.bytes, 6);
-
-      const temperature = +toTempC(t_raw).toFixed(2);
-      const ec_mS_cm = +((ec_raw * CAL_EC_SCALE) / 1000.0).toFixed(2);
-
-      let moisture = +(vwc_raw / 10.0).toFixed(1);
-      if (moisture > 100.0) moisture = 100.0;
-      if (moisture < 0) moisture = 0.0;
-
-      data = { temperature, moisture, ec: ec_mS_cm, ph: null };
-      return { data, warnings, errors };
-    }
-
-    // fPort 1: ambient
+    // === Port 1: normal packet: T1(2) + H1(2) ===
     if (input.fPort === 1) {
+      data.error = null;
+
       if (input.bytes.length < 4) {
-        errors.push("Payload too short on fPort 1 - expected 4 bytes");
+        errors.push("Payload too short on fPort 1 - expected 4+ bytes");
         return { data, warnings, errors };
       }
-      const t1_raw = readU16BE(input.bytes, 0);
-      const h1_raw = readU16BE(input.bytes, 2);
-      data.temperature_c = +toTempC_T1(t1_raw).toFixed(2);
-      data.humidity = +(h1_raw / 100.0).toFixed(2);
+
+      var t1_raw = (input.bytes[0] << 8) | input.bytes[1];
+      var h1_raw = (input.bytes[2] << 8) | input.bytes[3];
+      data.temperature_c = toTempC_T1(t1_raw); // T1 uses offset-compensated path
+      data.humidity = h1_raw / 100.0;
+
+      if (data.temperature_c < -40 || data.temperature_c > 85) {
+        warnings.push("Temperature out of typical range (-40..85°C)");
+      }
+      if (data.humidity > 100) {
+        warnings.push("Humidity > 100%");
+      }
       return { data, warnings, errors };
     }
 
-    // fPort 9: serial numbers + reset reason
+    // === Port 9: Sensor Serials + Reset Reason ===
+    // Layout (9 bytes total):
+    // 0-3: Sensor 1 Serial
+    // 4-7: Sensor 2 Serial
+    // 8:   Reset Reason Code
     if (input.fPort === 9) {
-      if (input.bytes.length !== 9) {
-        errors.push(`Payload length mismatch on fPort 9 - expected 9 bytes, got ${input.bytes.length}`);
+      data.error = null;
+
+      if (input.bytes.length < 9) {
+        errors.push("Payload too short on fPort 9 - expected 9 bytes");
         return { data, warnings, errors };
       }
 
-      const serial1 = readU32BE(input.bytes, 0);
-      const serial2 = readU32BE(input.bytes, 4);
-      const resetReason = input.bytes[8] & 0xff;
+      // Manual reconstruction to avoid 32-bit signed overflow from bitwise ops
+      var s1 = 0;
+      s1 += input.bytes[0] * 16777216; // 2^24
+      s1 += input.bytes[1] * 65536;    // 2^16
+      s1 += input.bytes[2] * 256;      // 2^8
+      s1 += input.bytes[3];
 
-      data = {
-        serial_1_u32: serial1,
-        serial_1_hex: u32ToHex(serial1),
-        serial_2_u32: serial2,
-        serial_2_hex: u32ToHex(serial2),
-        reset_reason: resetReason,
-        reset_reason_text: resetReasonMap[resetReason] || `Unknown code 0x${resetReason.toString(16).toUpperCase().padStart(2, "0")}`
-      };
+      var s2 = 0;
+      s2 += input.bytes[4] * 16777216;
+      s2 += input.bytes[5] * 65536;
+      s2 += input.bytes[6] * 256;
+      s2 += input.bytes[7];
+
+      var resetCode = input.bytes[8] & 0xFF;
+
+      data.sensor1_serial = s1;
+      data.sensor2_serial = s2;
+      data.reset_reason_code = resetCode;
+      data.reset_reason =
+        resetReasonMap.hasOwnProperty(resetCode)
+          ? resetReasonMap[resetCode]
+          : "Unknown reset reason";
 
       return { data, warnings, errors };
     }
 
-    // fPort 10: error code
+    // === Port 10: error-only (first byte is code) ===
     if (input.fPort === 10) {
       if (input.bytes.length < 1) {
-        errors.push("Payload too short on fPort 10");
+        errors.push("Payload too short on fPort 10 - expected ≥1 byte");
         return { data, warnings, errors };
       }
-      const code = input.bytes[0] & 0xff;
-      data.error = port10Map[code] || ("unknown error code " + code);
+      var code10 = input.bytes[0] & 0xFF;
+      data.error = port10Map[code10] || ("unknown error code: " + code10);
       return { data, warnings, errors };
     }
 
-    // fPort 11: sensors disagree / error detail
-    const len = input.bytes.length;
+    // === Port 11: sensors disagree — carry both sensors ===
+    // Layout: T1(2) + H1(2) + T2(2) + H2(2)  => total 8 bytes
     if (input.fPort === 11) {
-      if (len !== 4 && len !== 6 && len !== 8) {
-        errors.push(`Unexpected payload length on fPort 11 - got ${len} bytes (expected 4, 6, or 8)`);
+      if (input.bytes.length < 8) {
+        errors.push("Payload too short on fPort 11 - expected 8 bytes");
         return { data, warnings, errors };
       }
 
-      if (len >= 4) {
-        const t1r = readI16BE(input.bytes, 0);
-        const t2r = readI16BE(input.bytes, 2);
-        data.temperature1_c = +toTempC_T1(t1r).toFixed(2);
-        data.temperature2_c = +toTempC(t2r).toFixed(2);
-        data.error = "I2C_READ_ERROR_TEMP_MISMATCH";
-      }
+      var t1r = (input.bytes[0] << 8) | input.bytes[1];
+      var h1r = (input.bytes[2] << 8) | input.bytes[3];
+      var t2r = (input.bytes[4] << 8) | input.bytes[5];
+      var h2r = (input.bytes[6] << 8) | input.bytes[7];
 
-      if (len === 6) {
-        const extra = readU16BE(input.bytes, 4);
-        data.extra_raw = extra;
-        warnings.push(`fPort 11 included extra 2 bytes: 0x${extra.toString(16).toUpperCase().padStart(4, "0")}`);
-      }
+      var t1c = toTempC_T1(t1r); // T1 with +5500 compensation
+      var t2c = toTempC(t2r);    // T2 unchanged
 
-      if (len === 8) {
-        const t1r = readI16BE(input.bytes, 0);
-        const h1r = readU16BE(input.bytes, 2);
-        const t2r = readI16BE(input.bytes, 4);
-        const h2r = readU16BE(input.bytes, 6);
+      data.error = port10Map[0x04]; // "sensor validation failed"
+      data.temperature1_c = t1c;
+      data.humidity1 = h1r / 100.0;
+      data.temperature2_c = t2c;
+      data.humidity2 = h2r / 100.0;
+      data.temp_delta_c = +(Math.abs(t1c - t2c).toFixed(2));
 
-        data.temperature1_c = +toTempC_T1(t1r).toFixed(2);
-        data.humidity1 = +(h1r / 100.0).toFixed(2);
-        data.temperature2_c = +toTempC(t2r).toFixed(2);
-        data.humidity2 = +(h2r / 100.0).toFixed(2);
-        data.error = "SENSOR_DISAGREE_EXTENDED";
+      if (data.humidity1 > 100 || data.humidity2 > 100) {
+        warnings.push("Humidity value exceeds 100%");
       }
+      if (t1c < -40 || t1c > 85) warnings.push("Sensor1 temperature out of range");
+      if (t2c < -40 || t2c > 85) warnings.push("Sensor2 temperature out of range");
 
       return { data, warnings, errors };
     }
 
+    // === Default: treat like port 1 ===
+    if (input.bytes.length < 4) {
+      errors.push("Payload too short - expected at least 4 bytes");
+      return { data, warnings, errors };
+    }
+
+    var temp_raw = (input.bytes[0] << 8) | input.bytes[1];
+    var hum_raw = (input.bytes[2] << 8) | input.bytes[3];
+    data.temperature_c = toTempC_T1(temp_raw); // default path mirrors fPort 1 (T1)
+    data.humidity = hum_raw / 100.0;
+
+    if (data.temperature_c < -40 || data.temperature_c > 85) {
+      warnings.push("Temperature out of typical range (-40..85°C)");
+    }
+    if (data.humidity > 100) {
+      warnings.push("Humidity > 100%");
+    }
   } catch (e) {
-    errors.push("Error decoding payload: " + e.message);
+    errors.push("Error decoding payload: " + (e && e.message ? e.message : e));
   }
 
   return { data, warnings, errors };
 }
 
-// TTN legacy wrapper
+// Legacy TTN decoder
 function Decoder(bytes, port) {
-  const result = decodeUplink({ bytes, fPort: port });
+  var result = decodeUplink({ bytes: bytes, fPort: port });
   return result.data;
 }
