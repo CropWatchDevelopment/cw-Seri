@@ -25,7 +25,14 @@ function decodeUplink(input) {
     0x00: "Unknown/None"
   };
 
+  // Calibration: 1413 µS/cm reference / mean 1706.4
+  const CAL_EC_SCALE = 1413 / 1706.4; // ≈ 0.828303
+
   // helper(s)
+  function toInt16(raw16) {
+    if (raw16 > 32767) raw16 -= 65536; // int16
+    return raw16;
+  }
   // T2 / legacy temps (no device offset)
   function toTempC(raw16) {
     if (raw16 > 32767) raw16 -= 65536; // int16
@@ -38,6 +45,39 @@ function decodeUplink(input) {
   }
 
   try {
+    // === Soil sensor packet: ε25(2) + EC(2) + T(2) + VWC(2) ===
+    // Accept either fPort 2 (preferred) or fPort 1 with 8-byte payload
+    if (input.fPort === 2 || (input.fPort === 1 && input.bytes.length === 8)) {
+      if (input.bytes.length < 8) {
+        errors.push("Payload too short on fPort 2 - expected 8 bytes");
+        return { data, warnings, errors };
+      }
+
+      var e25_raw = (input.bytes[0] << 8) | input.bytes[1]; // ε25 * 100 (unused)
+      var ec_raw  = (input.bytes[2] << 8) | input.bytes[3]; // µS/cm (already)
+      var t_raw   = (input.bytes[4] << 8) | input.bytes[5]; // °C * 100
+      var vwc_raw = (input.bytes[6] << 8) | input.bytes[7]; // % * 10
+
+      var temperature = +toTempC(t_raw).toFixed(2);
+
+      // EC: µS/cm -> apply calibration -> mS/cm
+      var ec_mS_cm = +((ec_raw * CAL_EC_SCALE) / 1000.0).toFixed(2);
+
+      // Moisture: % with 1 decimal, clamp to 100.0
+      var moisture = +(vwc_raw / 10.0).toFixed(1);
+      if (moisture > 100.0) moisture = 100.0;
+      if (moisture < 0) moisture = 0.0;
+
+      data = {
+        temperature: temperature,
+        moisture: moisture,
+        ec: ec_mS_cm, // mS/cm
+        ph: null
+      };
+
+      return { data, warnings, errors };
+    }
+
     // === Port 1: normal packet: T1(2) + H1(2) ===
     if (input.fPort === 1) {
       data.error = null;

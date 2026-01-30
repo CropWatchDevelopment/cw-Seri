@@ -294,6 +294,88 @@ static void send_device_battery(void)
     lorawan_set_battery_level(&huart2, battery);
 }
 
+static void send_sensor_reading_once(void)
+{
+    /* Power on I2C sensors and read data */
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
+    HAL_Delay(1000);
+    watchdog_kick();
+    scan_i2c_bus();
+    send_device_info_packet();
+    int i2c_read_result = sensor_init_and_read();
+    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
+
+    /* Format data and send */
+    uint8_t payload[8] = {0};
+    if (has_soil_sensor)
+    {
+        uint16_t u;
+        u = (uint16_t)soil_e25;
+        payload[0] = (uint8_t)(u >> 8);
+        payload[1] = (uint8_t)(u & 0xFF);
+        u = (uint16_t)soil_EC;
+        payload[2] = (uint8_t)(u >> 8);
+        payload[3] = (uint8_t)(u & 0xFF);
+        u = (uint16_t)soil_temp;
+        payload[4] = (uint8_t)(u >> 8);
+        payload[5] = (uint8_t)(u & 0xFF);
+        u = (uint16_t)soil_VWC;
+        payload[6] = (uint8_t)(u >> 8);
+        payload[7] = (uint8_t)(u & 0xFF);
+        LoRaWAN_SendHex(payload, 8, 1, true);
+    }
+    else
+    {
+        switch (i2c_read_result)
+        {
+        case I2C_READ_SUCCESS:
+        {
+            payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+            payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+            payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+            payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
+            LoRaWAN_SendHex(payload, 4, 1, true);
+            break;
+        }
+        case I2C_SENSOR_1_MISSING:
+        {
+            uint8_t code = 1;
+            LoRaWAN_SendHex(&code, 1, 10, true);
+            break;
+        }
+        case I2C_SENSOR_2_MISSING:
+        {
+            uint8_t code = 2;
+            LoRaWAN_SendHex(&code, 1, 10, true);
+            break;
+        }
+        case I2C_SENSOR_1_READ_FAIL:
+        {
+            uint8_t code = 1;
+            LoRaWAN_SendHex(&code, 1, 10, true);
+            break;
+        }
+        case I2C_SENSOR_2_READ_FAIL:
+        {
+            uint8_t code = 2;
+            LoRaWAN_SendHex(&code, 1, 10, true);
+            break;
+        }
+        case I2C_READ_ERROR_TEMP_MISMATCH:
+        {
+            payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+            payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+            payload[2] = (uint8_t)(calculated_temp_2 >> 8);
+            payload[3] = (uint8_t)(calculated_temp_2 & 0xFF);
+            LoRaWAN_SendHex(payload, 4, 11, true);
+            break;
+        }
+        default:
+            break;
+        }
+    }
+}
+
 /* 1) Simple: for NUL-terminated strings */
 static inline bool str_exists(const char *s, const char *token)
 {
@@ -990,67 +1072,14 @@ int main(void)
                 {
                     join(&huart2);
                     watchdog_kick();
+                    if (is_connected)
+                    {
+                        send_sensor_reading_once();
+                    }
                 }
                 else
                 {
-                    /* Power on I2C sensors and read data */
-                    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
-                    HAL_Delay(1000);
-                    watchdog_kick();
-                    scan_i2c_bus();
-                    send_device_info_packet();
-                    int i2c_read_result = sensor_init_and_read();
-                    HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
-
-                    /* Format data and send */
-                    uint8_t payload[6] = {0};
-                    switch (i2c_read_result)
-                    {
-                    case I2C_READ_SUCCESS:
-                    {
-                        payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-                        payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-                        payload[2] = (uint8_t)(calculated_hum_1 >> 8);
-                        payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-                        LoRaWAN_SendHex(payload, 4, 1, true);
-                        break;
-                    }
-                    case I2C_SENSOR_1_MISSING:
-                    {
-                        uint8_t code = 1;
-                        LoRaWAN_SendHex(&code, 1, 10, true);
-                        break;
-                    }
-                    case I2C_SENSOR_2_MISSING:
-                    {
-                        uint8_t code = 2;
-                        LoRaWAN_SendHex(&code, 1, 10, true);
-                        break;
-                    }
-                    case I2C_SENSOR_1_READ_FAIL:
-                    {
-                        uint8_t code = 1;
-                        LoRaWAN_SendHex(&code, 1, 10, true);
-                        break;
-                    }
-                    case I2C_SENSOR_2_READ_FAIL:
-                    {
-                        uint8_t code = 2;
-                        LoRaWAN_SendHex(&code, 1, 10, true);
-                        break;
-                    }
-                    case I2C_READ_ERROR_TEMP_MISMATCH:
-                    {
-                        payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-                        payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-                        payload[2] = (uint8_t)(calculated_temp_2 >> 8);
-                        payload[3] = (uint8_t)(calculated_temp_2 & 0xFF);
-                        LoRaWAN_SendHex(payload, 4, 11, true);
-                        break;
-                    }
-                    default:
-                        break;
-                    }
+                    send_sensor_reading_once();
 
                     watchdog_kick();
 
