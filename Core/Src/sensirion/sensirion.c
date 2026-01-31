@@ -85,23 +85,27 @@ void read_sensor_serials(void)
 
 int sensor_init_and_read(void)
 {
-    // pmwcs3_t soil;
-    // pmwcs3_init(&soil, &hi2c1, 0x63);
-    // if (has_soil_sensor) {
-    //     float ret[4];
-    //     if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
-    //         HAL_Delay(400); // Sensor requires ~100 ms for measurement per vendor docs
-    //         if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
-    //             // Successfully read soil sensor; you can process soil data here if needed
-    //             soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0
-    //             soil_EC   = (int16_t)(ret[1] * 10.0f);  // EC scaled by /10.0
-    //             soil_temp = (int16_t)(ret[2] * 100.0f); // Temp scaled by /100.0
-    //             soil_VWC  = (int16_t)(ret[3] * 10.0f);  // VWC scaled by /10.0
-    //             return 0; // Indicate success if soil sensor read is successful
-    //         }
-    //     }
-    //     has_soil_sensor = false; // Mark as not present if any stage fails
-    // }
+    pmwcs3_t soil;
+    if (has_soil_sensor) {
+        if (pmwcs3_init(&soil, &hi2c1, 0x63) == PMWCS3_OK) {
+            float ret[4];
+            if (pmwcs3_new_reading(&soil) == PMWCS3_OK) {
+                sensirion_i2c_hal_sleep_usec(400000); // Sensor requires ~100 ms for measurement per vendor docs
+                if (pmwcs3_get_all(&soil, ret) == PMWCS3_OK) {
+                    soil_e25  = (int16_t)(ret[0] * 100.0f); // ε25 scaled by /100.0
+                    soil_EC   = (int16_t)(ret[1] * 10.0f);  // EC scaled by /10.0
+                    soil_temp = (int16_t)(ret[2] * 100.0f); // Temp scaled by /100.0
+                    soil_VWC  = (int16_t)(ret[3] * 10.0f);  // VWC scaled by /10.0
+                } else {
+                    has_soil_sensor = false; // Mark as not present if any stage fails
+                }
+            } else {
+                has_soil_sensor = false; // Mark as not present if any stage fails
+            }
+        } else {
+            has_soil_sensor = false; // Mark as not present if init fails
+        }
+    }
 
 
 
