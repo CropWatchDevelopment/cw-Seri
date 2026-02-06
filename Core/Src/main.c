@@ -370,8 +370,9 @@ static void rtc_switch_to_lsi_failover(void)
      * advance and the previous while-loop would hang forever.
      * At 16 MHz HSI, ~3.2 M iterations ≈ 200 ms.
      */
+#define LSI_READY_TIMEOUT_CYCLES  3200000u  /* 16 MHz × 0.2 s */
     for (volatile uint32_t wait = 0;
-         __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET && wait < 3200000u;
+         __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET && wait < LSI_READY_TIMEOUT_CYCLES;
          ++wait)
     {
         /* busy-wait */
