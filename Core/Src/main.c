@@ -363,11 +363,18 @@ static void rtc_switch_to_lsi_failover(void)
 
     /* Enable LSI */
     __HAL_RCC_LSI_ENABLE();
-    uint32_t t0 = HAL_GetTick();
-    while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET &&
-           (HAL_GetTick() - t0) < 200u)
+    /*
+     * Wait for LSI ready using a cycle-count loop instead of HAL_GetTick().
+     * This function can be called from NMI context where SysTick may be
+     * suspended (during STOP-mode entry), so HAL_GetTick() would never
+     * advance and the previous while-loop would hang forever.
+     * At 16 MHz HSI, ~3.2 M iterations ≈ 200 ms.
+     */
+    for (volatile uint32_t wait = 0;
+         __HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET && wait < 3200000u;
+         ++wait)
     {
-        /* wait briefly */
+        /* busy-wait */
     }
 
     /* Switch RTC clock to LSI */
@@ -382,7 +389,11 @@ static void rtc_switch_to_lsi_failover(void)
     hrtc.Init.SynchPrediv = rtc_compute_lsi_synch_prediv();
     if (HAL_RTC_Init(&hrtc) != HAL_OK)
     {
-        Error_Handler();
+        /* Do NOT call Error_Handler() here — this may run from NMI context
+         * where a reset would cause a boot-loop.  Mark the source and let
+         * the main loop attempt recovery on the next cycle. */
+        rtc_clock_source = RTC_CLOCK_LSI;
+        return;
     }
 
     /* Re-arm wakeup timer with new clock source */
@@ -584,6 +595,8 @@ int join(UART_HandleTypeDef *huart)
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < 35000)
     {
+        if (total_rcv >= sizeof(rxbuf) - 1)
+            break; // buffer full
         uint16_t chunk = 0;
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
                                      sizeof(rxbuf) - total_rcv - 1, &chunk,
@@ -965,7 +978,6 @@ int main(void)
 
         if (do_transmit)
         {
-            wakeup_counter = 0; // reset for next cycle
             wakes_accum = 0;
             transmission_count++;
             // first_run = false; // Moved to end of block
@@ -1028,6 +1040,7 @@ int main(void)
             if (i2c_success == 0)
             {
 
+                readCount++;
                 if (readCount > 99)
                 {
                     readCount = 0;
@@ -1087,15 +1100,18 @@ int main(void)
                 if (i2c_success == 4)
                 {
                     // add the dis-agreed sensor info to payload
+                    uint8_t disagree_payload[8] = {0};
 
-                    payload[0] = (uint8_t)(calculated_temp_1 >> 8);
-                    payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
-                    payload[2] = calculated_hum_1;
+                    disagree_payload[0] = (uint8_t)(calculated_temp_1 >> 8);
+                    disagree_payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
+                    disagree_payload[2] = (uint8_t)(calculated_hum_1 >> 8);
+                    disagree_payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
 
-                    payload[3] = (uint8_t)(calculated_temp_2 >> 8);
-                    payload[4] = (uint8_t)(calculated_temp_2 & 0xFF);
-                    payload[5] = calculated_hum_2;
-                    LoRaWAN_SendHex(payload, 6,
+                    disagree_payload[4] = (uint8_t)(calculated_temp_2 >> 8);
+                    disagree_payload[5] = (uint8_t)(calculated_temp_2 & 0xFF);
+                    disagree_payload[6] = (uint8_t)(calculated_hum_2 >> 8);
+                    disagree_payload[7] = (uint8_t)(calculated_hum_2 & 0xFF);
+                    LoRaWAN_SendHex(disagree_payload, 8,
                                     11); // send both dis-agreed values and an error
                 }
             }
@@ -1132,13 +1148,26 @@ void SystemClock_Config(void)
 
     /** Initializes the RCC Oscillators according to the specified parameters
      * in the RCC_OscInitTypeDef structure.
+     * When running on LSI failover (LSE crystal broken), skip LSE to avoid
+     * Error_Handler → reset loop that would brick the device.
      */
-    RCC_OscInitStruct.OscillatorType =
-        RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSE;
-    RCC_OscInitStruct.LSEState = RCC_LSE_ON;
     RCC_OscInitStruct.HSIState = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+
+    if (rtc_clock_source == RTC_CLOCK_LSI)
+    {
+        RCC_OscInitStruct.OscillatorType =
+            RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI;
+        RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+    }
+    else
+    {
+        RCC_OscInitStruct.OscillatorType =
+            RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSE;
+        RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+    }
+
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
     {
         Error_Handler();
@@ -1161,15 +1190,27 @@ void SystemClock_Config(void)
         RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
     PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
     PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+
+    if (rtc_clock_source == RTC_CLOCK_LSI)
+    {
+        PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    }
+    else
+    {
+        PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    }
+
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
     {
         Error_Handler();
     }
 
-    /** Enables the Clock Security System
+    /** Enables the Clock Security System (only when using LSE)
      */
-    HAL_RCCEx_EnableLSECSS();
+    if (rtc_clock_source == RTC_CLOCK_LSE)
+    {
+        HAL_RCCEx_EnableLSECSS();
+    }
 }
 
 /**
