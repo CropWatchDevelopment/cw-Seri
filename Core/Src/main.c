@@ -84,6 +84,7 @@ typedef enum
 
 static volatile rtc_clock_source_t rtc_clock_source = RTC_CLOCK_LSE;
 static uint32_t last_lse_retry_tick = 0;
+static volatile bool lse_failure_pending = false;
 
 // LoRaWAN UART Baud
 //  Start out at 115200 as it is the 1st time starting baud of the Ezurio LoRa
@@ -943,6 +944,12 @@ int main(void)
         /* USER CODE END WHILE */
 
         /* USER CODE BEGIN 3 */
+        if (lse_failure_pending)
+        {
+            lse_failure_pending = false;
+            rtc_switch_to_lsi_failover();
+        }
+
         /* If we are running on LSI due to an earlier LSE failure, periodically try
          * to restore LSE. */
         if (rtc_clock_source == RTC_CLOCK_LSI)
@@ -1136,12 +1143,26 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.OscillatorType =
         RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSE;
     RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+    RCC_OscInitStruct.LSIState = RCC_LSI_OFF;
     RCC_OscInitStruct.HSIState = RCC_HSI_ON;
     RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
     {
-        Error_Handler();
+        /* LSE failed to start: fall back to LSI to keep RTC alive */
+        RCC_OscInitStruct.OscillatorType =
+            RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI;
+        RCC_OscInitStruct.LSEState = RCC_LSE_OFF;
+        RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+        if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+        {
+            Error_Handler();
+        }
+        rtc_clock_source = RTC_CLOCK_LSI;
+    }
+    else
+    {
+        rtc_clock_source = RTC_CLOCK_LSE;
     }
 
     /** Initializes the CPU, AHB and APB buses clocks
@@ -1161,7 +1182,9 @@ void SystemClock_Config(void)
         RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
     PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
     PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    PeriphClkInit.RTCClockSelection =
+        (rtc_clock_source == RTC_CLOCK_LSE) ? RCC_RTCCLKSOURCE_LSE
+                                            : RCC_RTCCLKSOURCE_LSI;
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
     {
         Error_Handler();
@@ -1169,7 +1192,14 @@ void SystemClock_Config(void)
 
     /** Enables the Clock Security System
      */
-    HAL_RCCEx_EnableLSECSS();
+    if (rtc_clock_source == RTC_CLOCK_LSE)
+    {
+        HAL_RCCEx_EnableLSECSS();
+    }
+    else
+    {
+        HAL_RCCEx_DisableLSECSS();
+    }
 }
 
 /**
@@ -1296,7 +1326,9 @@ static void MX_RTC_Init(void)
     hrtc.Instance = RTC;
     hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
     hrtc.Init.AsynchPrediv = 127;
-    hrtc.Init.SynchPrediv = 255;
+    hrtc.Init.SynchPrediv =
+        (rtc_clock_source == RTC_CLOCK_LSI) ? rtc_compute_lsi_synch_prediv()
+                                            : 255;
     hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
     hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
     hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
@@ -1595,6 +1627,12 @@ void EnterDeepSleepMode(void)
 void HAL_RCCEx_LSECSS_Callback(void)
 {
     /* LSE failed. Immediately fall back to LSI for RTC and keep running. */
+    if (__get_IPSR() != 0U)
+    {
+        lse_failure_pending = true;
+        return;
+    }
+
     rtc_switch_to_lsi_failover();
 }
 

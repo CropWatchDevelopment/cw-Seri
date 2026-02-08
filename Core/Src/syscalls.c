@@ -30,6 +30,7 @@
 #include <sys/time.h>
 #include <sys/times.h>
 
+#include "main.h"
 
 /* Variables */
 extern int __io_putchar(int ch) __attribute__((weak));
@@ -61,7 +62,8 @@ int _kill(int pid, int sig)
 void _exit (int status)
 {
   _kill(status, -1);
-  while (1) {}    /* Make sure we hang here */
+  HAL_NVIC_SystemReset();
+  while (1) {}
 }
 
 __attribute__((weak)) int _read(int file, char *ptr, int len)
