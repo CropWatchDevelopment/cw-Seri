@@ -2217,7 +2217,7 @@ void EnterDeepSleepMode(void)
     /* Suspend SysTick to avoid wake-up from SysTick interrupt */
     HAL_SuspendTick();
 
-    /* Kick watchdog before entering STOP */
+    /* Kick watchdog before disabling interrupts and entering STOP */
     watchdog_kick();
 
     /*
