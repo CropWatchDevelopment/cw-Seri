@@ -628,6 +628,10 @@ int join(UART_HandleTypeDef *huart)
     while (HAL_GetTick() - start < 35000)
     {
         watchdog_kick();
+        if (total_rcv >= sizeof(rxbuf) - 1)
+        {
+            break; // Buffer full, stop reading
+        }
         uint16_t chunk = 0;
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
                                      sizeof(rxbuf) - total_rcv - 1, &chunk,
@@ -758,7 +762,7 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip
     const uint32_t overall_to_ms = 35000; // your 35s budget
 
     // Try to catch immediate "OK\r\n"
-    (void)HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf, sizeof(rxbuf), &last, 400);
+    (void)HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf, sizeof(rxbuf) - 1, &last, 400);
     total += last;
 
     while ((HAL_GetTick() - start) < overall_to_ms)
@@ -2213,6 +2217,17 @@ void EnterDeepSleepMode(void)
     /* Suspend SysTick to avoid wake-up from SysTick interrupt */
     HAL_SuspendTick();
 
+    /* Kick watchdog before entering STOP */
+    watchdog_kick();
+
+    /*
+     * CRITICAL: Disable interrupts, then clear flags and check for a
+     * race condition where the alarm already fired between arming and
+     * now. If the alarm already fired, skip sleep entirely to avoid
+     * WFI hanging until the next IWDG reset.
+     */
+    __disable_irq();
+
     /* Clear any pending wake-up flags before sleeping */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 
@@ -2220,14 +2235,23 @@ void EnterDeepSleepMode(void)
     __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
     __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
 
-    /* Kick watchdog before entering STOP */
-    watchdog_kick();
+    if (g_alarm_fired)
+    {
+        /* Alarm already fired — do not enter STOP, just restore */
+        __enable_irq();
+        restore_from_stop();
+        return;
+    }
 
-    /* Enter STOP Mode with Low Power Regulator */
+    /* Enter STOP Mode with Low Power Regulator.
+     * With PRIMASK=1 (interrupts disabled), WFI still wakes on any
+     * pending NVIC interrupt, but the ISR won't execute until we
+     * re-enable interrupts. This prevents the race where the alarm
+     * fires between flag-clearing and WFI. */
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
-    /* === DEVICE IS NOW IN DEEP SLEEP === */
-    /* === WAKE UP OCCURS HERE (Alarm A fired) === */
+    /* === WAKE UP OCCURS HERE (Alarm A or other event) === */
+    __enable_irq();
 
     restore_from_stop();
 }
