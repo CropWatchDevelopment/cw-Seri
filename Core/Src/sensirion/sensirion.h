@@ -37,12 +37,6 @@ extern uint32_t last_serial_2;
 extern uint32_t serial_1;
 extern uint32_t serial_2;
 
-void scan_i2c_bus(void);
-int sensor_init_and_read(void);
-void read_sensor_serials(void);
-extern bool     has_sensor_2;
-extern bool     has_soil_sensor;
-
 // Soil sensor readings (scaled as noted in sensirion.c)
 extern int16_t  soil_e25;
 extern int16_t  soil_EC;
@@ -52,6 +46,7 @@ extern int16_t  soil_VWC;
 // Public API
 void scan_i2c_bus(void);
 int  sensor_init_and_read(void);
+void read_sensor_serials(void);
 
 // Conversion helpers (exported)
 int16_t  sht4x_temp_centi_from_ticks(uint16_t t_ticks);

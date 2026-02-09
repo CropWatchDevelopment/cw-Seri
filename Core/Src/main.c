@@ -138,6 +138,7 @@ void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response);
 int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level);
 static void usart2_recover_after_stop(void);
+static void i2c1_bus_recovery(void);
 static void restore_from_stop(void);
 static uint32_t compute_sleep_interval_seconds(uint32_t wdg_actual_ms);
 static void rtc_clear_backup_state(void);
@@ -1540,6 +1541,65 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 
+/**
+ * @brief  Recover I2C bus from stuck state (SDA held low by slave)
+ * @note   Toggles SCL as GPIO to clock out any slave holding SDA low.
+ *         Must be called BEFORE HAL_I2C_Init() and AFTER GPIO clocks are enabled.
+ *         This prevents hard-to-debug hangs when a sensor was mid-transfer
+ *         as the MCU entered STOP mode.
+ */
+static void i2c1_bus_recovery(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    /* Configure SCL (PB6) as open-drain output for manual clocking */
+    GPIO_InitStruct.Pin = GPIO_PIN_6;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* Configure SDA (PB7) as input to monitor release */
+    GPIO_InitStruct.Pin = GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    /* Toggle SCL up to 16 times to clock out any stuck slave */
+    for (uint8_t i = 0; i < 16u; i++)
+    {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_RESET);
+        /* ~5 µs low (well within I2C spec for standard/fast mode) */
+        for (volatile uint32_t d = 0; d < 32u; d++) { __NOP(); }
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+        for (volatile uint32_t d = 0; d < 32u; d++) { __NOP(); }
+
+        /* If SDA is released (high), bus is free */
+        if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_7) == GPIO_PIN_SET)
+        {
+            break;
+        }
+    }
+
+    /* Generate a STOP condition: SDA low then high while SCL is high */
+    GPIO_InitStruct.Pin = GPIO_PIN_7;
+    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_RESET);
+    for (volatile uint32_t d = 0; d < 32u; d++) { __NOP(); }
+    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, GPIO_PIN_SET);
+    for (volatile uint32_t d = 0; d < 32u; d++) { __NOP(); }
+
+    /*
+     * GPIO pins will be reconfigured to I2C alternate function
+     * by MX_I2C1_Init() -> HAL_I2C_Init() -> HAL_I2C_MspInit().
+     */
+}
+
 static void restore_from_stop(void)
 {
     /* Resume SysTick for timeouts used during clock reconfiguration */
@@ -1569,6 +1629,13 @@ static void restore_from_stop(void)
 
     /* Restore GPIO configuration for normal operation */
     MX_GPIO_Init();
+
+    /*
+     * I2C bus recovery: if a sensor was mid-transfer when STOP mode
+     * was entered, it may hold SDA low.  Toggle SCL to free the bus
+     * before re-initialising the I2C peripheral.
+     */
+    i2c1_bus_recovery();
 
     /* Re-initialize peripherals with proper sequence */
     MX_I2C1_Init();
