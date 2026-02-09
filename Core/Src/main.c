@@ -105,6 +105,8 @@ static bool first_run = true;
 
 static uint16_t send_battery_counter = 0;
 static uint16_t send_sensor_id_counter = 0;
+/* Ensure first uplink after boot prioritizes sensor payload over device-info */
+static bool g_boot_sensor_payload_priority = true;
 
 /* Next scheduled alarm time (persisted across cycles) */
 static rtc_calendar_t g_next_alarm = {0};
@@ -147,6 +149,8 @@ static bool rtc_load_next_send_bkp(uint32_t *epoch_out);
 static void rtc_store_next_send_bkp(uint32_t epoch);
 static bool rtc_arm_alarm_a_with_retry(const rtc_calendar_t *alarm_time);
 static void rcc_apply_periph_fallback_if_lse_missing(void);
+static inline void rcc_enable_guard_iopenr(uint32_t mask);
+static inline void rcc_enable_guard_apb1enr(uint32_t mask);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -240,8 +244,10 @@ static void uart2_rx_flush(UART_HandleTypeDef *huart)
 // }
 
 // Helper to send device info (serials + reset reason)
-static void send_device_info_packet(void)
+// Returns true if a packet was actually sent.
+static bool send_device_info_packet(void)
 {
+    bool sent = false;
     GPIO_PinState i2c_prev_state =
         HAL_GPIO_ReadPin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin);
     if (i2c_prev_state == GPIO_PIN_RESET)
@@ -276,12 +282,14 @@ static void send_device_info_packet(void)
         send_sensor_id_counter = 0;
         LoRaWAN_SendHex(serial_payload, 9, 9, false);
         reset_reason = 0;
+        sent = true;
     }
 
     if (i2c_prev_state == GPIO_PIN_RESET)
     {
         HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
     }
+    return sent;
 }
 
 static void send_device_battery(void)
@@ -296,12 +304,24 @@ static void send_device_battery(void)
 
 static void send_sensor_reading_once(void)
 {
+    /*
+     * Only one uplink per cycle:
+     * - first post-boot cycle: send sensor payload first
+     * - later cycles: send device-info when due, then return
+     */
+    if (!g_boot_sensor_payload_priority)
+    {
+        if (send_device_info_packet())
+        {
+            return;
+        }
+    }
+
     /* Power on I2C sensors and read data */
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
     HAL_Delay(1000);
     watchdog_kick();
     scan_i2c_bus();
-    send_device_info_packet();
     int i2c_read_result = sensor_init_and_read();
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_RESET);
 
@@ -373,6 +393,11 @@ static void send_sensor_reading_once(void)
         default:
             break;
         }
+    }
+
+    if (g_boot_sensor_payload_priority)
+    {
+        g_boot_sensor_payload_priority = false;
     }
 }
 
@@ -1520,11 +1545,15 @@ static void restore_from_stop(void)
     HAL_PWR_EnableBkUpAccess();
     __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
 
-    /* Re-enable peripheral clocks */
+    /* Re-enable peripheral clocks with readback/barrier guard (STM32L0 errata) */
     __HAL_RCC_GPIOA_CLK_ENABLE();
+    rcc_enable_guard_iopenr(RCC_IOPENR_GPIOAEN);
     __HAL_RCC_GPIOB_CLK_ENABLE();
+    rcc_enable_guard_iopenr(RCC_IOPENR_GPIOBEN);
     __HAL_RCC_I2C1_CLK_ENABLE();
+    rcc_enable_guard_apb1enr(RCC_APB1ENR_I2C1EN);
     __HAL_RCC_USART2_CLK_ENABLE();
+    rcc_enable_guard_apb1enr(RCC_APB1ENR_USART2EN);
 
     /* Restore GPIO configuration for normal operation */
     MX_GPIO_Init();
@@ -1552,6 +1581,20 @@ static void rcc_apply_periph_fallback_if_lse_missing(void)
             Error_Handler();
         }
     }
+}
+
+static inline void rcc_enable_guard_iopenr(uint32_t mask)
+{
+    (void)READ_BIT(RCC->IOPENR, mask);
+    __DSB();
+    __NOP();
+}
+
+static inline void rcc_enable_guard_apb1enr(uint32_t mask)
+{
+    (void)READ_BIT(RCC->APB1ENR, mask);
+    __DSB();
+    __NOP();
 }
 
 /*============================================================================
@@ -1633,6 +1676,10 @@ static uint32_t compute_sleep_interval_seconds(uint32_t wdg_actual_ms)
 
 static void rtc_clear_backup_state(void)
 {
+    if (hrtc.Instance == NULL)
+    {
+        hrtc.Instance = RTC;
+    }
     __HAL_RCC_PWR_CLK_ENABLE();
     HAL_PWR_EnableBkUpAccess();
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_MAGIC_REG, 0u);
@@ -1746,6 +1793,12 @@ bool rtc_init_once(void)
 {
     RTC_TimeTypeDef sTime = {0};
     RTC_DateTypeDef sDate = {0};
+
+    /*
+     * Ensure handle instance is valid before any BKP register access.
+     * MX_RTC_Init() can return early when LSE is not ready.
+     */
+    hrtc.Instance = RTC;
 
     /* Enable PWR and backup access */
     __HAL_RCC_PWR_CLK_ENABLE();
@@ -2169,6 +2222,7 @@ static void usart2_recover_after_stop(void)
     if (!__HAL_RCC_USART2_IS_CLK_ENABLED())
     {
         __HAL_RCC_USART2_CLK_ENABLE();
+        rcc_enable_guard_apb1enr(RCC_APB1ENR_USART2EN);
     }
 
     HAL_UART_DeInit(&huart2);
@@ -2254,14 +2308,15 @@ void Error_Handler(void)
         if ((__HAL_RCC_GET_FLAG(RCC_FLAG_LSERDY) == RESET) ||
             (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET))
         {
-            return;
+            rtc_clear_backup_state();
+            HAL_RCCEx_DisableLSECSS();
         }
     }
     __disable_irq();
-    //  while (1)
-    //  {
-    //  }
     HAL_NVIC_SystemReset();
+    while (1)
+    {
+    }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

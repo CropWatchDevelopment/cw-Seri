@@ -1,10 +1,6 @@
 #include "watchdog.h"
 #include "stm32l0xx.h"
 
-#define IWDG_KEY_ENABLE 0x5555u
-#define IWDG_KEY_RELOAD 0xAAAAu
-#define IWDG_KEY_START  0xCCCCu
-
 /* Use prescaler /256 for longest timeout range */
 #define IWDG_PRESCALER_VALUE 6u
 #define IWDG_PRESCALER_DIV   256u
@@ -108,7 +104,7 @@ static uint32_t iwdg_compute_timeout_ms(uint32_t reload, uint32_t lsi_hz)
 
 static void iwdg_apply_reload(uint32_t reload)
 {
-    IWDG->KR = IWDG_KEY_ENABLE;
+    IWDG->KR = IWDG_KEY_WRITE_ACCESS_ENABLE;
     IWDG->PR = IWDG_PRESCALER_VALUE;
     IWDG->RLR = (reload & IWDG_RELOAD_MAX);
     IWDG->WINR = IWDG_RELOAD_MAX;
@@ -131,7 +127,7 @@ bool watchdog_init(uint32_t desired_timeout_ms, uint32_t lsi_hz,
 
     uint32_t reload = iwdg_compute_reload(desired_timeout_ms, lsi_hz);
     iwdg_apply_reload(reload);
-    IWDG->KR = IWDG_KEY_START;
+    IWDG->KR = IWDG_KEY_ENABLE;
     g_watchdog_started = true;
 
     if (actual_timeout_ms != NULL)
@@ -190,7 +186,7 @@ bool watchdog_init_90s(uint32_t *actual_timeout_ms)
      * The 90s requirement means cycle time must complete well within this.
      */
     iwdg_apply_reload(IWDG_RELOAD_MAX);
-    IWDG->KR = IWDG_KEY_START;
+    IWDG->KR = IWDG_KEY_ENABLE;
     g_watchdog_started = true;
 
     if (actual_timeout_ms != NULL)

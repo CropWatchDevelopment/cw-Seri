@@ -84,18 +84,11 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-#if defined (DEBUG_PHASE)
-  /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
-    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
     HAL_NVIC_SystemReset();
-#else
-  {
-      HAL_NVIC_SystemReset();
-#endif
-    /* USER CODE END W1_HardFault_IRQn 0 */
   }
+  /* USER CODE END HardFault_IRQn 0 */
 }
 
 /**
@@ -158,16 +151,18 @@ void RTC_IRQHandler(void)
   }
 
   /*
-   * Handle RTC Alarm A interrupt (EXTI line 17).
-   * We use Alarm A for periodic scheduling. Set flag and clear interrupt.
+   * STM32L0 RTC errata workaround:
+   * perform three consecutive ALRAF checks/clears to avoid missing
+   * a wakeup alarm interrupt in edge timing conditions.
    */
-  if (__HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
+  for (uint8_t i = 0; i < 3u; ++i)
   {
-    g_alarm_fired = true;
-    /* Clear RTC Alarm A flag */
-    __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
-    /* Clear EXTI line 17 (RTC Alarm) pending bit */
-    __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
+    if (__HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
+    {
+      g_alarm_fired = true;
+      __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
+      __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
+    }
   }
   /* USER CODE END RTC_IRQn 0 */
   HAL_RTC_AlarmIRQHandler(&hrtc);
