@@ -1023,25 +1023,48 @@ int main(void)
 
             // Dynamically concatenate DEV_EUI and JOIN_EUI to form APP_KEY
             char app_key[33]; // 16 (DEV_EUI) + 16 (JOIN_EUI) + 1 (null terminator)
-            sprintf(app_key, "%s%s", DEV_EUI, JOIN_EUI);
+            int app_key_len = snprintf(app_key, sizeof(app_key), "%s%s", DEV_EUI,
+                                       JOIN_EUI);
+            if (app_key_len <= 0 || app_key_len >= (int)sizeof(app_key))
+            {
+                Error_Handler();
+            }
 
             // Build and send APP KEY command
             char cmd_app[128]; // Buffer for full command
-            sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
-            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
+            int cmd_app_len =
+                snprintf(cmd_app, sizeof(cmd_app), "AT%%S 500=\"%s\"\r\n", app_key);
+            if (cmd_app_len <= 0 || cmd_app_len >= (int)sizeof(cmd_app))
+            {
+                Error_Handler();
+            }
+            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, (uint16_t)cmd_app_len,
+                              300);
             HAL_Delay(400);
             watchdog_kick();
 
             // Dynamically build and send DEV EUI command
             char cmd_dev[64];
-            sprintf(cmd_dev, "AT%%S 501=\"%s\"\r\n", DEV_EUI);
-            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, strlen(cmd_dev), 300);
+            int cmd_dev_len =
+                snprintf(cmd_dev, sizeof(cmd_dev), "AT%%S 501=\"%s\"\r\n", DEV_EUI);
+            if (cmd_dev_len <= 0 || cmd_dev_len >= (int)sizeof(cmd_dev))
+            {
+                Error_Handler();
+            }
+            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_dev, (uint16_t)cmd_dev_len,
+                              300);
             HAL_Delay(400);
 
             // Dynamically build and send JOIN EUI command
             char cmd_join[64];
-            sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
-            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
+            int cmd_join_len = snprintf(cmd_join, sizeof(cmd_join),
+                                        "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
+            if (cmd_join_len <= 0 || cmd_join_len >= (int)sizeof(cmd_join))
+            {
+                Error_Handler();
+            }
+            HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join,
+                              (uint16_t)cmd_join_len, 300);
             HAL_Delay(400);
             watchdog_kick();
 

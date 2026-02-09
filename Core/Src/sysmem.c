@@ -58,6 +58,10 @@ void *_sbrk(ptrdiff_t incr)
   const uint32_t stack_limit = (uint32_t)&_estack - (uint32_t)&_Min_Stack_Size;
   const uint8_t *max_heap = (uint8_t *)stack_limit;
   uint8_t *prev_heap_end;
+  uintptr_t heap_min;
+  uintptr_t heap_max;
+  uintptr_t heap_end;
+  uintptr_t next_heap_end;
 
   /* Initialize heap end at first call */
   if (NULL == __sbrk_heap_end)
@@ -65,15 +69,42 @@ void *_sbrk(ptrdiff_t incr)
     __sbrk_heap_end = &_end;
   }
 
-  /* Protect heap from growing into the reserved MSP stack */
-  if (__sbrk_heap_end + incr > max_heap)
+  heap_min = (uintptr_t)&_end;
+  heap_max = (uintptr_t)max_heap;
+  heap_end = (uintptr_t)__sbrk_heap_end;
+
+  /*
+   * Keep heap growth/shrink within [_end, stack_limit] and avoid pointer
+   * arithmetic overflow/underflow on extreme incr values.
+   */
+  if (incr > 0)
   {
-    errno = ENOMEM;
-    return (void *)-1;
+    uintptr_t inc = (uintptr_t)incr;
+    if ((heap_end > heap_max) || (inc > (heap_max - heap_end)))
+    {
+      errno = ENOMEM;
+      return (void *)-1;
+    }
+    next_heap_end = heap_end + inc;
+  }
+  else if (incr < 0)
+  {
+    /* Two's-complement absolute value without signed overflow on PTRDIFF_MIN */
+    uintptr_t dec = (~(uintptr_t)incr) + 1u;
+    if ((heap_end < heap_min) || (dec > (heap_end - heap_min)))
+    {
+      errno = ENOMEM;
+      return (void *)-1;
+    }
+    next_heap_end = heap_end - dec;
+  }
+  else
+  {
+    next_heap_end = heap_end;
   }
 
   prev_heap_end = __sbrk_heap_end;
-  __sbrk_heap_end += incr;
+  __sbrk_heap_end = (uint8_t *)next_heap_end;
 
   return (void *)prev_heap_end;
 }
