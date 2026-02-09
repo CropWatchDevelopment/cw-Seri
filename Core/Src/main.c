@@ -1168,9 +1168,28 @@ int main(void)
                     rtc_read_now(&now);
                     if (rtc_calendar_to_epoch(&now, &now_epoch))
                     {
-                        while (g_next_send_epoch <= now_epoch)
+                        /*
+                         * Advance g_next_send_epoch past now_epoch.
+                         * Use division to jump ahead in O(1) when the gap is
+                         * large (e.g. stale/corrupt BKP value) instead of
+                         * looping, which could starve the watchdog.
+                         */
+                        if (g_next_send_epoch <= now_epoch &&
+                            send_interval_seconds > 0u)
                         {
-                            g_next_send_epoch += send_interval_seconds;
+                            uint32_t gap = now_epoch - g_next_send_epoch;
+                            uint32_t steps = gap / send_interval_seconds + 1u;
+                            /* Clamp to avoid uint32_t overflow in multiplication */
+                            uint32_t max_steps = (UINT32_MAX - g_next_send_epoch) /
+                                                 send_interval_seconds;
+                            if (steps > max_steps)
+                            {
+                                g_next_send_epoch = now_epoch + send_interval_seconds;
+                            }
+                            else
+                            {
+                                g_next_send_epoch += steps * send_interval_seconds;
+                            }
                         }
                         rtc_store_next_send_bkp(g_next_send_epoch);
                     }
