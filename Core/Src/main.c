@@ -1174,11 +1174,22 @@ int main(void)
                          * large (e.g. stale/corrupt BKP value) instead of
                          * looping, which could starve the watchdog.
                          */
-                        if (g_next_send_epoch <= now_epoch)
+                        if (g_next_send_epoch <= now_epoch &&
+                            send_interval_seconds > 0u)
                         {
                             uint32_t gap = now_epoch - g_next_send_epoch;
                             uint32_t steps = gap / send_interval_seconds + 1u;
-                            g_next_send_epoch += steps * send_interval_seconds;
+                            /* Clamp to avoid uint32_t overflow in multiplication */
+                            uint32_t max_steps = (UINT32_MAX - g_next_send_epoch) /
+                                                 send_interval_seconds;
+                            if (steps > max_steps)
+                            {
+                                g_next_send_epoch = now_epoch + send_interval_seconds;
+                            }
+                            else
+                            {
+                                g_next_send_epoch += steps * send_interval_seconds;
+                            }
                         }
                         rtc_store_next_send_bkp(g_next_send_epoch);
                     }
