@@ -74,6 +74,11 @@
 
 /* Maximum LSE start retries before fail-safe */
 #define LSE_START_MAX_RETRIES 3u
+/* Reject restored alarms that are unreasonably far ahead (likely stale/corrupt BKP) */
+#define RTC_RESTORED_ALARM_MIN_AHEAD_SECONDS 30u
+#define RTC_RESTORED_ALARM_MAX_AHEAD_SECONDS 600u
+/* Bound catch-up work to avoid long loops if persisted schedule is stale */
+#define RTC_ALARM_CATCHUP_MAX_STEPS 4096u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -149,6 +154,10 @@ static void rtc_store_next_alarm_bkp(const rtc_calendar_t *alarm);
 static bool rtc_load_next_send_bkp(uint32_t *epoch_out);
 static void rtc_store_next_send_bkp(uint32_t epoch);
 static bool rtc_arm_alarm_a_with_retry(const rtc_calendar_t *alarm_time);
+static void rtc_invalidate_next_alarm_bkp(void);
+static bool rtc_restored_alarm_is_reasonable(const rtc_calendar_t *now,
+                                             const rtc_calendar_t *alarm,
+                                             uint32_t max_ahead_seconds);
 static void rcc_apply_periph_fallback_if_lse_missing(void);
 static inline void rcc_enable_guard_iopenr(uint32_t mask);
 static inline void rcc_enable_guard_apb1enr(uint32_t mask);
@@ -941,6 +950,30 @@ int main(void)
     watchdog_init_90s(&wdg_actual_ms);
     watchdog_kick();
     g_sleep_interval_seconds = compute_sleep_interval_seconds(wdg_actual_ms);
+
+    if (g_next_alarm_valid)
+    {
+        rtc_calendar_t now_for_alarm_sanity = {0};
+        rtc_read_now(&now_for_alarm_sanity);
+
+        uint32_t max_ahead_seconds = g_sleep_interval_seconds * 8u;
+        if (max_ahead_seconds < RTC_RESTORED_ALARM_MIN_AHEAD_SECONDS)
+        {
+            max_ahead_seconds = RTC_RESTORED_ALARM_MIN_AHEAD_SECONDS;
+        }
+        if (max_ahead_seconds > RTC_RESTORED_ALARM_MAX_AHEAD_SECONDS)
+        {
+            max_ahead_seconds = RTC_RESTORED_ALARM_MAX_AHEAD_SECONDS;
+        }
+
+        if (!rtc_restored_alarm_is_reasonable(&now_for_alarm_sanity,
+                                              &g_next_alarm,
+                                              max_ahead_seconds))
+        {
+            g_next_alarm_valid = false;
+            rtc_invalidate_next_alarm_bkp();
+        }
+    }
 
     /* Capture reset reason early */
     reset_reason = GetResetSource();
@@ -2130,9 +2163,28 @@ void rtc_compute_next_alarm_fixed_grid(const rtc_calendar_t *now, rtc_calendar_t
     calendar_add_seconds(next_alarm, interval);
 
     /* If we're late (next_alarm <= now), catch up in interval steps */
+    uint32_t catchup_steps = 0u;
     while (calendar_compare(next_alarm, now) <= 0)
     {
+        if (catchup_steps >= RTC_ALARM_CATCHUP_MAX_STEPS)
+        {
+            /*
+             * Persisted schedule is too stale/corrupt for bounded catch-up.
+             * Rebase to now + interval and proceed.
+             */
+            *next_alarm = *now;
+            calendar_add_seconds(next_alarm, interval);
+            return;
+        }
+
         calendar_add_seconds(next_alarm, interval);
+        catchup_steps++;
+
+        /* Keep watchdog serviced even if we need many catch-up steps. */
+        if ((catchup_steps & 0x3Fu) == 0u)
+        {
+            watchdog_kick();
+        }
     }
 }
 
@@ -2221,6 +2273,44 @@ static bool rtc_load_next_alarm_bkp(rtc_calendar_t *alarm)
     }
 
     return rtc_epoch_to_calendar(epoch, alarm);
+}
+
+static void rtc_invalidate_next_alarm_bkp(void)
+{
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_NEXT_ALARM_EPOCH_REG, 0u);
+}
+
+static bool rtc_restored_alarm_is_reasonable(const rtc_calendar_t *now,
+                                             const rtc_calendar_t *alarm,
+                                             uint32_t max_ahead_seconds)
+{
+    uint32_t now_epoch = 0u;
+    uint32_t alarm_epoch = 0u;
+
+    if ((now == NULL) || (alarm == NULL) || (max_ahead_seconds == 0u))
+    {
+        return false;
+    }
+
+    if (!rtc_calendar_to_epoch(now, &now_epoch) ||
+        !rtc_calendar_to_epoch(alarm, &alarm_epoch))
+    {
+        return false;
+    }
+
+    if (alarm_epoch <= now_epoch)
+    {
+        return false;
+    }
+
+    if ((alarm_epoch - now_epoch) > max_ahead_seconds)
+    {
+        return false;
+    }
+
+    return true;
 }
 
 static void rtc_store_next_send_bkp(uint32_t epoch)
