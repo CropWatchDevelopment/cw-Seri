@@ -365,7 +365,9 @@ static void rtc_switch_to_lsi_failover(void)
     HAL_RCCEx_DisableLSECSS();
     __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
 
-    /* Enable LSI – use a bounded busy-loop that does not depend on SysTick */
+    /* Enable LSI - use a bounded busy-loop that does not depend on SysTick.
+     * At 16 MHz HSI, 200000 iterations is roughly 50-100 ms, well above the
+     * typical LSI startup time of ~50 us. */
     __HAL_RCC_LSI_ENABLE();
     for (volatile uint32_t i = 0; i < 200000u; ++i)
     {
@@ -1473,7 +1475,7 @@ void configWakeupTime()
         hrtc.Init.AsynchPrediv = 127;
         hrtc.Init.SynchPrediv = (rtc_clock_source == RTC_CLOCK_LSI)
                                     ? rtc_compute_lsi_synch_prediv()
-                                    : 255;
+                                    : 255; /* LSE: 32768/(128*256)=1 Hz */
         hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
         hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
         hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
