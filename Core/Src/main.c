@@ -2296,6 +2296,8 @@ void EnterDeepSleepMode(void)
         __HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
     {
         g_alarm_fired = true;
+        __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
+        __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
         __enable_irq();
         restore_from_stop();
         return;
