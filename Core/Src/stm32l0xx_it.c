@@ -167,8 +167,8 @@ void RTC_IRQHandler(void)
 
   /*
    * STM32L0 RTC errata workaround:
-   * perform three consecutive ALRAF checks/clears to avoid missing
-   * a wakeup alarm interrupt in edge timing conditions.
+   * process/clear all RTC interrupt sources so Alarm A cannot be masked
+   * by another RTC source in edge timing conditions.
    */
   for (uint8_t i = 0; i < 3u; ++i)
   {
@@ -178,6 +178,26 @@ void RTC_IRQHandler(void)
       __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
       __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
     }
+
+    if (__HAL_RTC_WAKEUPTIMER_GET_FLAG(&hrtc, RTC_FLAG_WUTF) != 0U)
+    {
+      __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
+      __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
+    }
+
+    if (__HAL_RTC_TIMESTAMP_GET_FLAG(&hrtc, RTC_FLAG_TSF) != 0U)
+    {
+      __HAL_RTC_TIMESTAMP_CLEAR_FLAG(&hrtc, RTC_FLAG_TSF);
+      __HAL_RTC_TAMPER_TIMESTAMP_EXTI_CLEAR_FLAG();
+    }
+
+#if defined(RTC_FLAG_TAMP1F)
+    if (__HAL_RTC_TAMPER_GET_FLAG(&hrtc, RTC_FLAG_TAMP1F) != 0U)
+    {
+      __HAL_RTC_TAMPER_CLEAR_FLAG(&hrtc, RTC_FLAG_TAMP1F);
+      __HAL_RTC_TAMPER_TIMESTAMP_EXTI_CLEAR_FLAG();
+    }
+#endif
   }
   /* USER CODE END RTC_IRQn 0 */
   HAL_RTC_AlarmIRQHandler(&hrtc);

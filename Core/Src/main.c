@@ -2291,6 +2291,7 @@ void EnterDeepSleepMode(void)
      * Instead, check atomically: if the alarm already fired, skip sleep
      * entirely and return to the main loop to process the event.
      */
+    uint32_t primask = __get_PRIMASK();
     __disable_irq();
     if (g_alarm_fired ||
         __HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
@@ -2298,17 +2299,29 @@ void EnterDeepSleepMode(void)
         g_alarm_fired = true;
         __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
         __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
-        __enable_irq();
+        if (primask == 0U)
+        {
+            __enable_irq();
+        }
         restore_from_stop();
         return;
     }
-    __enable_irq();
 
     /* Kick watchdog before entering STOP */
     watchdog_kick();
 
-    /* Enter STOP Mode with Low Power Regulator */
-    HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+    /* Enter STOP Mode with Main Regulator for maximum wake reliability */
+    HAL_PWR_EnterSTOPMode(PWR_MAINREGULATOR_ON, PWR_STOPENTRY_WFI);
+
+    /*
+     * Restore interrupt mask immediately after wake-up.
+     * Keep IRQs disabled only around the WFI entry to close the
+     * alarm-fired race window.
+     */
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
 
     /* === DEVICE IS NOW IN DEEP SLEEP === */
     /* === WAKE UP OCCURS HERE (Alarm A fired) === */
