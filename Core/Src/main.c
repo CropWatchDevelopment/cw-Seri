@@ -355,19 +355,22 @@ static void rtc_switch_to_lsi_failover(void)
         return;
     }
 
+    /* This may be called from NMI while SysTick is suspended.
+     * Resume SysTick so HAL timeout functions do not hang. */
+    HAL_ResumeTick();
+
     HAL_PWR_EnableBkUpAccess();
 
     /* Stop LSE/CSS to clear the failure condition */
     HAL_RCCEx_DisableLSECSS();
     __HAL_RCC_LSE_CONFIG(RCC_LSE_OFF);
 
-    /* Enable LSI */
+    /* Enable LSI – use a bounded busy-loop that does not depend on SysTick */
     __HAL_RCC_LSI_ENABLE();
-    uint32_t t0 = HAL_GetTick();
-    while (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) == RESET &&
-           (HAL_GetTick() - t0) < 200u)
+    for (volatile uint32_t i = 0; i < 200000u; ++i)
     {
-        /* wait briefly */
+        if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSIRDY) != RESET)
+            break;
     }
 
     /* Switch RTC clock to LSI */
@@ -376,14 +379,12 @@ static void rtc_switch_to_lsi_failover(void)
     PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
     HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit);
 
-    /* Re-init RTC with LSI dividers */
+    /* Re-init RTC with LSI dividers – avoid Error_Handler in ISR context
+     * because it disables IRQs and resets, which from NMI can cause lockup. */
     HAL_RTC_DeInit(&hrtc);
     hrtc.Init.AsynchPrediv = 127;
     hrtc.Init.SynchPrediv = rtc_compute_lsi_synch_prediv();
-    if (HAL_RTC_Init(&hrtc) != HAL_OK)
-    {
-        Error_Handler();
-    }
+    (void)HAL_RTC_Init(&hrtc);
 
     /* Re-arm wakeup timer with new clock source */
     configWakeupTime();
@@ -1027,6 +1028,7 @@ int main(void)
             uint8_t payload[6] = {0};
             if (i2c_success == 0)
             {
+                readCount++;
 
                 if (readCount > 99)
                 {
@@ -1132,6 +1134,9 @@ void SystemClock_Config(void)
 
     /** Initializes the RCC Oscillators according to the specified parameters
      * in the RCC_OscInitTypeDef structure.
+     *
+     * If LSE fails to start (e.g. after STOP wake-up with a slow crystal),
+     * fall back to LSI so the MCU keeps running instead of reset-looping.
      */
     RCC_OscInitStruct.OscillatorType =
         RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSE;
@@ -1141,7 +1146,19 @@ void SystemClock_Config(void)
     RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
     if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
     {
-        Error_Handler();
+        /* LSE may have failed; retry with HSI only + LSI as RTC fallback */
+        RCC_OscInitStruct.OscillatorType =
+            RCC_OSCILLATORTYPE_HSI | RCC_OSCILLATORTYPE_LSI;
+        RCC_OscInitStruct.LSEState = RCC_LSE_OFF;
+        RCC_OscInitStruct.LSIState = RCC_LSI_ON;
+        RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+        RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+        RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+        if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+        {
+            Error_Handler();
+        }
+        rtc_clock_source = RTC_CLOCK_LSI;
     }
 
     /** Initializes the CPU, AHB and APB buses clocks
@@ -1161,15 +1178,25 @@ void SystemClock_Config(void)
         RCC_PERIPHCLK_USART2 | RCC_PERIPHCLK_I2C1 | RCC_PERIPHCLK_RTC;
     PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_HSI;
     PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-    PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    if (rtc_clock_source == RTC_CLOCK_LSI)
+    {
+        PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSI;
+    }
+    else
+    {
+        PeriphClkInit.RTCClockSelection = RCC_RTCCLKSOURCE_LSE;
+    }
     if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
     {
         Error_Handler();
     }
 
-    /** Enables the Clock Security System
+    /** Enables the Clock Security System (only when LSE is active)
      */
-    HAL_RCCEx_EnableLSECSS();
+    if (rtc_clock_source == RTC_CLOCK_LSE)
+    {
+        HAL_RCCEx_EnableLSECSS();
+    }
 }
 
 /**
@@ -1422,15 +1449,12 @@ static uint32_t rtc_compute_wakeup_reload(uint32_t seconds)
 
 void configWakeupTime()
 {
-    // Optional visual indicator that we (re)armed the wake-up
     uint32_t wakeup_timer_value =
         rtc_compute_wakeup_reload((uint32_t)SLEEP_INTERVAL_SECONDS);
     HAL_StatusTypeDef st = HAL_ERROR;
 
     for (int attempt = 0; attempt < 3 && st != HAL_OK; ++attempt)
     {
-        // Deactivate previous timer before re-arming (HAL recommendation when
-        // changing value)
         HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
         __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
         __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
@@ -1440,14 +1464,27 @@ void configWakeupTime()
 
     if (st != HAL_OK)
     {
-        // Last-resort: reinit RTC to clear stuck state, then try once more
+        /* Last-resort: reinit RTC to clear stuck state, then try once more.
+         * Do NOT call MX_RTC_Init() because it sets a zero-count wakeup timer
+         * and calls Error_Handler() on failure, which would reset the MCU. */
         HAL_RTC_DeInit(&hrtc);
-        MX_RTC_Init();
+        hrtc.Instance = RTC;
+        hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
+        hrtc.Init.AsynchPrediv = 127;
+        hrtc.Init.SynchPrediv = (rtc_clock_source == RTC_CLOCK_LSI)
+                                    ? rtc_compute_lsi_synch_prediv()
+                                    : 255;
+        hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
+        hrtc.Init.OutPutRemap = RTC_OUTPUT_REMAP_NONE;
+        hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
+        hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
+        (void)HAL_RTC_Init(&hrtc);
+
         HAL_RTCEx_DeactivateWakeUpTimer(&hrtc);
         __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
         __HAL_RTC_WAKEUPTIMER_EXTI_CLEAR_FLAG();
-        st = HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value,
-                                         RTC_WAKEUPCLOCK_RTCCLK_DIV16);
+        (void)HAL_RTCEx_SetWakeUpTimer_IT(&hrtc, wakeup_timer_value,
+                                          RTC_WAKEUPCLOCK_RTCCLK_DIV16);
     }
 }
 void HAL_RTCEx_WakeUpTimerEventCallback(RTC_HandleTypeDef *hrtc)
@@ -1538,7 +1575,8 @@ void RestoreGPIOAfterWakeup(void)
  */
 void EnterDeepSleepMode(void)
 {
-    //  HAL_UART_DeInit(&huart2);
+    /* DeInit peripherals BEFORE disabling their clocks to avoid bus faults */
+    HAL_UART_DeInit(&huart2);
     HAL_I2C_DeInit(&hi2c1);
 
     /* Configure all GPIOs for ultra-low power */
@@ -1553,21 +1591,27 @@ void EnterDeepSleepMode(void)
     __HAL_RCC_GPIOD_CLK_DISABLE();
     __HAL_RCC_GPIOH_CLK_DISABLE();
 
-    /* Suspend SysTick to avoid wake-up from SysTick interrupt */
-    HAL_SuspendTick();
-
     /* Clear any pending wake-up flags before sleeping */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
     __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
 
-    /* Restart the RTC wake-up timer for next wake-up */
+    /* Restart the RTC wake-up timer for next wake-up.
+     * This must happen BEFORE SysTick is suspended because HAL_RTCEx_*
+     * internally uses HAL_GetTick() for timeouts – if SysTick is already
+     * stopped, those waits spin forever → device hangs. */
     configWakeupTime();
+
+    /* Suspend SysTick AFTER configWakeupTime to avoid HAL timeout hangs */
+    HAL_SuspendTick();
 
     /* Enter STOP Mode with Low Power Regulator */
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
 
     /* === DEVICE IS NOW IN DEEP SLEEP === */
     /* === WAKE UP OCCURS HERE === */
+
+    /* Resume SysTick FIRST so HAL timeouts work during re-init below */
+    HAL_ResumeTick();
 
     /* Upon wake-up, the system clock needs to be reconfigured */
     SystemClock_Config();
@@ -1584,9 +1628,6 @@ void EnterDeepSleepMode(void)
     /* Re-initialize peripherals with proper sequence */
     MX_I2C1_Init();
     usart2_recover_after_stop();
-
-    /* Resume SysTick */
-    HAL_ResumeTick();
 
     /* Add longer delay for UART stabilization */
     HAL_Delay(100);
