@@ -653,14 +653,19 @@ int join(UART_HandleTypeDef *huart)
     while (HAL_GetTick() - start < 35000)
     {
         watchdog_kick();
+        if (total_rcv >= sizeof(rxbuf) - 1u)
+            break;
         uint16_t chunk = 0;
+        uint16_t cap = (uint16_t)(sizeof(rxbuf) - 1u - total_rcv);
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
-                                     sizeof(rxbuf) - total_rcv - 1, &chunk,
+                                     cap, &chunk,
                                      1000) == HAL_OK)
         {
             if (chunk > 0)
             {
                 total_rcv += chunk;
+                if (total_rcv >= sizeof(rxbuf))
+                    total_rcv = sizeof(rxbuf) - 1u;
                 rxbuf[total_rcv] = 0; // Null terminate
                 if (str_exists((char *)rxbuf, "JOIN: [") ||
                     str_exists((char *)rxbuf, "ERROR"))
@@ -954,6 +959,7 @@ int main(void)
         int need_provision = uart2_probe_and_align();
         if (need_provision == 1)
         {
+            watchdog_kick();
             HAL_UART_Transmit(
                 &huart2, (uint8_t *)"AT\r\n", 4,
                 300); // One initial AT to clear any odd commands sent before
@@ -962,12 +968,14 @@ int main(void)
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 602=1\r\n", 11,
                               300); // Activation Mode OTAA (0 = ABP, 1 = OTAA)
             HAL_Delay(400);
+            watchdog_kick();
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 603=0\r\n", 11,
                               300); // Set CLASS to A
             HAL_Delay(400);
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 604=1\r\n", 11,
                               300); // Confirmed 0 = NO, 1 = yes
             HAL_Delay(400);
+            watchdog_kick();
             HAL_UART_Transmit(
                 &huart2, (uint8_t *)"ATS 605=3\r\n", 11,
                 300); // Retry if Confirm Fails, 3 Retries set (and is default)
@@ -975,6 +983,7 @@ int main(void)
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 611=9\r\n", 11,
                               300); // Set Region to AS923-1 (JAPAN)
             HAL_Delay(400);
+            watchdog_kick();
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 302=9600\r\n", 14, 300);
             HAL_Delay(400);
 
@@ -987,6 +996,7 @@ int main(void)
             sprintf(cmd_app, "AT%%S 500=\"%s\"\r\n", app_key);
             HAL_UART_Transmit(&huart2, (uint8_t *)cmd_app, strlen(cmd_app), 300);
             HAL_Delay(400);
+            watchdog_kick();
 
             // Dynamically build and send DEV EUI command
             char cmd_dev[64];
@@ -999,12 +1009,14 @@ int main(void)
             sprintf(cmd_join, "AT%%S 502=\"%s\"\r\n", JOIN_EUI);
             HAL_UART_Transmit(&huart2, (uint8_t *)cmd_join, strlen(cmd_join), 300);
             HAL_Delay(400);
+            watchdog_kick();
 
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATS 213=2000\r\n", 14,
                               300); // Set Sleep Mode to 2 seconds
             HAL_Delay(400);
             HAL_UART_Transmit(&huart2, (uint8_t *)"AT&W\r\n", 6, 300); // SAVE ALL!
             HAL_Delay(400);
+            watchdog_kick();
             HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300); // Soft reboot!
             HAL_Delay(400);
             UART2_SetBaud(9600);
@@ -2270,9 +2282,25 @@ void EnterDeepSleepMode(void)
     /* Clear any pending wake-up flags before sleeping */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
 
-    /* Clear Alarm A flag and EXTI line to ensure clean wake */
-    __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
-    __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
+    /*
+     * Race-condition guard: if the RTC alarm already fired between
+     * rtc_arm_alarm_a() and here, the ALRAF flag is set and g_alarm_fired
+     * is true.  Clearing the flag now would erase the only pending wake
+     * source, causing WFI to sleep until the watchdog resets us.
+     *
+     * Instead, check atomically: if the alarm already fired, skip sleep
+     * entirely and return to the main loop to process the event.
+     */
+    __disable_irq();
+    if (g_alarm_fired ||
+        __HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
+    {
+        g_alarm_fired = true;
+        __enable_irq();
+        restore_from_stop();
+        return;
+    }
+    __enable_irq();
 
     /* Kick watchdog before entering STOP */
     watchdog_kick();

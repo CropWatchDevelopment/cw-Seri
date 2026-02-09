@@ -71,10 +71,19 @@ extern RTC_HandleTypeDef hrtc;
 void NMI_Handler(void)
 {
   /* USER CODE BEGIN NonMaskableInt_IRQn 0 */
-  /* No LSE/CSS handling; LSE is used for RTC scheduling. */
+  /*
+   * LSE CSS failure triggers NMI on STM32L0.  If the LSE CSS flag is set,
+   * handle it here to prevent the program from continuing with a dead LSE
+   * (which would hang RTC operations and eventually cause a watchdog reset).
+   */
+  if (__HAL_RCC_GET_FLAG(RCC_FLAG_LSECSS) != RESET)
+  {
+    __HAL_RCC_LSECSS_EXTI_CLEAR_FLAG();
+    HAL_RCCEx_LSECSS_IRQHandler();
+  }
   /* USER CODE END NonMaskableInt_IRQn 0 */
   /* USER CODE BEGIN NonMaskableInt_IRQn 1 */
-  /* Return immediately. */
+  /* Return immediately for non-CSS NMIs. */
   /* USER CODE END NonMaskableInt_IRQn 1 */
 }
 
