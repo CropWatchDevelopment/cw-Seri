@@ -90,21 +90,16 @@ void NMI_Handler(void)
 /**
   * @brief This function handles Hard fault interrupt.
   */
-__attribute__((naked)) void HardFault_Handler(void)
+void HardFault_Handler(void)
 {
-  /*
-   * Stack-independent reset path: if the hard fault was caused by stack
-   * corruption, avoid C call frames and request reset directly via AIRCR.
-   */
-  __asm volatile(
-      "cpsid i             \n"
-      "1:                  \n"
-      "ldr r0, =0xE000ED0C \n" /* SCB->AIRCR */
-      "ldr r1, =0x05FA0004 \n" /* VECTKEY | SYSRESETREQ */
-      "str r1, [r0]        \n"
-      "dsb                 \n"
-      "isb                 \n"
-      "b 1b                \n");
+  /* USER CODE BEGIN HardFault_IRQn 0 */
+
+  /* USER CODE END HardFault_IRQn 0 */
+  while (1)
+  {
+    /* USER CODE BEGIN W1_HardFault_IRQn 0 */
+    /* USER CODE END W1_HardFault_IRQn 0 */
+  }
 }
 
 /**
