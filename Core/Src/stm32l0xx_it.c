@@ -93,6 +93,17 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+  __disable_irq();
+  if (hrtc.Instance == NULL)
+  {
+    hrtc.Instance = RTC;
+  }
+  __HAL_RCC_PWR_CLK_ENABLE();
+  HAL_PWR_EnableBkUpAccess();
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0xDEAD0001u);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR5, SCB->ICSR);
+  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, SCB->AIRCR);
+  NVIC_SystemReset();
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
