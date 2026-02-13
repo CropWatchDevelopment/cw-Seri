@@ -44,6 +44,11 @@ enum {
 };
 
 /* ----------------------------------------------------------------------- */
+static int pmwcs3_is_valid(const pmwcs3_t *dev)
+{
+    return (dev != NULL) && (dev->bus != NULL);
+}
+
 pmwcs3_status_t pmwcs3_init(pmwcs3_t *dev,
                             I2C_HandleTypeDef *bus,
                             uint8_t i2c_addr)
@@ -56,6 +61,7 @@ pmwcs3_status_t pmwcs3_init(pmwcs3_t *dev,
 
 pmwcs3_status_t pmwcs3_new_address(pmwcs3_t *dev, uint8_t new_addr)
 {
+    if (!pmwcs3_is_valid(dev)) return PMWCS3_ERR_BADARG;
     uint8_t buf[2] = { CMD_SET_I2C_ADDR, (uint8_t)(new_addr & 0x7F) };
     if (HAL_I2C_Master_Transmit(dev->bus,
                                 dev->addr << 1, buf, sizeof(buf),
@@ -69,6 +75,7 @@ pmwcs3_status_t pmwcs3_new_address(pmwcs3_t *dev, uint8_t new_addr)
 static pmwcs3_status_t calib_cmd_param(pmwcs3_t *dev,
                                        uint8_t cmd, uint16_t param)
 {
+    if (!pmwcs3_is_valid(dev)) return PMWCS3_ERR_BADARG;
     uint8_t buf[3] = { cmd, param & 0xFF, (param >> 8) & 0xFF };
     if (HAL_I2C_Master_Transmit(dev->bus, dev->addr << 1, buf, sizeof(buf), PMWCS3_I2C_TIMEOUT) != HAL_OK)
         return PMWCS3_ERR_I2C;
@@ -77,6 +84,7 @@ static pmwcs3_status_t calib_cmd_param(pmwcs3_t *dev,
 
 static pmwcs3_status_t calib_cmd_no_param(pmwcs3_t *dev, uint8_t cmd)
 {
+    if (!pmwcs3_is_valid(dev)) return PMWCS3_ERR_BADARG;
     if (HAL_I2C_Master_Transmit(dev->bus,
                                 dev->addr << 1, &cmd, 1, /* Send only 1 command byte */
                                 PMWCS3_I2C_TIMEOUT) != HAL_OK)
@@ -101,6 +109,7 @@ pmwcs3_status_t pmwcs3_cal_ec(pmwcs3_t *dev, uint16_t ec_uS)
 
 pmwcs3_status_t pmwcs3_new_reading(pmwcs3_t *dev)
 {
+    if (!pmwcs3_is_valid(dev)) return PMWCS3_ERR_BADARG;
     uint8_t cmd = CMD_READ_START; /* Corrected command */
     return (HAL_I2C_Master_Transmit(dev->bus,
                                     dev->addr << 1, &cmd, 1,
@@ -111,6 +120,7 @@ pmwcs3_status_t pmwcs3_new_reading(pmwcs3_t *dev)
 /* core low-level fetch --------------------------------------------------- */
 static pmwcs3_status_t read_raw(pmwcs3_t *dev, int16_t raw[4])
 {
+    if (!pmwcs3_is_valid(dev) || raw == NULL) return PMWCS3_ERR_BADARG;
     uint8_t cmd_get_data = CMD_GET_DATA;
     uint8_t buf[8] = {0};
 
@@ -134,6 +144,7 @@ static pmwcs3_status_t read_raw(pmwcs3_t *dev, int16_t raw[4])
 /* public getters -------------------------------------------------------- */
 pmwcs3_status_t pmwcs3_get_all(pmwcs3_t *dev, float out[4])
 {
+    if (out == NULL) return PMWCS3_ERR_BADARG;
     int16_t raw[4] = {0};
     pmwcs3_status_t st = read_raw(dev, raw);
     if (st != PMWCS3_OK) return st;

@@ -94,15 +94,25 @@ void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
   __disable_irq();
-  if (hrtc.Instance == NULL)
+
+  /*
+   * Persist a hard-fault marker + compact context before reset:
+   * high 16 bits = signature, low 16 bits = SCB->ICSR snapshot.
+   * Use only BKP register indices available on STM32L073 (DR0..DR4).
+   */
+  RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+  PWR->CR |= PWR_CR_DBP;
+  for (uint32_t i = 0u; i < 1024u; ++i)
   {
-    hrtc.Instance = RTC;
+    if ((PWR->CR & PWR_CR_DBP) != 0u)
+    {
+      break;
+    }
   }
-  __HAL_RCC_PWR_CLK_ENABLE();
-  HAL_PWR_EnableBkUpAccess();
-  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR3, 0xDEAD0001u);
-  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR5, SCB->ICSR);
-  HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DR6, SCB->AIRCR);
+  RTC->BKP3R = DIAG_STAGE_HARDFAULT_SIGNATURE | (SCB->ICSR & 0x0000FFFFu);
+  __DSB();
+
+  /* Keep hard-fault path deterministic: reset immediately after capture. */
   NVIC_SystemReset();
 
   /* USER CODE END HardFault_IRQn 0 */

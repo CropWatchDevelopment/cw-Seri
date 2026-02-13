@@ -89,14 +89,18 @@ int16_t sensirion_i2c_read_words_as_bytes(uint8_t address, uint8_t* data,
     int16_t ret;
     uint16_t i, j;
     uint16_t size;
-    uint16_t word_buf[SENSIRION_MAX_BUFFER_WORDS];
-    uint8_t* const buf8 = (uint8_t*)word_buf;
+    uint8_t word_buf[SENSIRION_MAX_BUFFER_WORDS *
+                     (SENSIRION_WORD_SIZE + CRC8_LEN)];
+    uint8_t* const buf8 = word_buf;
 
     if (num_words > SENSIRION_MAX_BUFFER_WORDS) {
         return BYTE_NUM_ERROR;
     }
 
     size = num_words * (SENSIRION_WORD_SIZE + CRC8_LEN);
+    if (size > sizeof(word_buf)) {
+        return BYTE_NUM_ERROR;
+    }
 
     ret = sensirion_i2c_hal_read(address, buf8, size);
     if (ret != NO_ERROR)
@@ -145,8 +149,14 @@ int16_t sensirion_i2c_write_cmd(uint8_t address, uint16_t command) {
 int16_t sensirion_i2c_write_cmd_with_args(uint8_t address, uint16_t command,
                                           const uint16_t* data_words,
                                           uint16_t num_words) {
-    uint8_t buf[SENSIRION_MAX_BUFFER_WORDS];
+    uint8_t buf[SENSIRION_COMMAND_SIZE +
+                (SENSIRION_MAX_BUFFER_WORDS *
+                 (SENSIRION_WORD_SIZE + CRC8_LEN))];
     uint16_t buf_size;
+
+    if (num_words > SENSIRION_MAX_BUFFER_WORDS) {
+        return BYTE_NUM_ERROR;
+    }
 
     buf_size =
         sensirion_i2c_fill_cmd_send_buf(buf, command, data_words, num_words);
@@ -286,12 +296,17 @@ int16_t sensirion_i2c_read_data_inplace(uint8_t address, uint8_t* buffer,
                                         uint16_t expected_data_length) {
     int16_t error;
     uint16_t i, j;
-    uint16_t size = (expected_data_length / SENSIRION_WORD_SIZE) *
-                    (SENSIRION_WORD_SIZE + CRC8_LEN);
+    uint32_t size32 = ((uint32_t)expected_data_length / SENSIRION_WORD_SIZE) *
+                      (SENSIRION_WORD_SIZE + CRC8_LEN);
+    uint16_t size;
 
     if (expected_data_length % SENSIRION_WORD_SIZE != 0) {
         return BYTE_NUM_ERROR;
     }
+    if (size32 > UINT16_MAX) {
+        return BYTE_NUM_ERROR;
+    }
+    size = (uint16_t)size32;
 
     error = sensirion_i2c_hal_read(address, buffer, size);
     if (error) {

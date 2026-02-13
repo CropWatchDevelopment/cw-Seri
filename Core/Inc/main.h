@@ -88,6 +88,7 @@ extern volatile bool g_alarm_fired;
 #define I2C_ENABLE_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
+#define DIAG_STAGE_HARDFAULT_SIGNATURE 0xB0F10000u
 
 /* USER CODE END Private defines */
 

@@ -70,6 +70,15 @@ __attribute__((weak)) int _read(int file, char *ptr, int len)
 {
   (void)file;
   int DataIdx;
+  if (!ptr || len <= 0)
+  {
+    return 0;
+  }
+  if (!__io_getchar)
+  {
+    errno = ENOSYS;
+    return -1;
+  }
 
   for (DataIdx = 0; DataIdx < len; DataIdx++)
   {
@@ -83,6 +92,15 @@ __attribute__((weak)) int _write(int file, char *ptr, int len)
 {
   (void)file;
   int DataIdx;
+  if (!ptr || len <= 0)
+  {
+    return 0;
+  }
+  if (!__io_putchar)
+  {
+    /* No low-level sink configured: avoid hard fault, drop silently. */
+    return len;
+  }
 
   for (DataIdx = 0; DataIdx < len; DataIdx++)
   {

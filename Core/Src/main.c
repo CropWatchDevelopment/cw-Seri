@@ -68,6 +68,9 @@
 #define DIAG_STAGE_POST_WAKE 0xB0010003u
 #define DIAG_STAGE_STOP_RACE_SKIP 0xB0010004u
 #define DIAG_STAGE_ALARM_ARM_FAILED 0xB0010005u
+/* High 16 bits signature, low 16 bits carry fault context from SCB->ICSR. */
+#define DIAG_STAGE_HARDFAULT_MASK 0xFFFF0000u
+#define RESET_REASON_HARDFAULT 0x07u
 
 /* RTC prescalers for 32.768 kHz LSE crystal: 1 Hz tick */
 #define RTC_ASYNCH_PREDIV 127u
@@ -180,8 +183,19 @@ static void diag_mark_stage(uint32_t stage);
 static uint8_t GetResetSource(void)
 {
     uint8_t reason = 0xFF;
+    if (hrtc.Instance == NULL)
+    {
+        hrtc.Instance = RTC;
+    }
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    uint32_t diag_stage = HAL_RTCEx_BKUPRead(&hrtc, RTC_BKP_DIAG_STAGE_REG);
 
-    if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST))
+    if ((diag_stage & DIAG_STAGE_HARDFAULT_MASK) == DIAG_STAGE_HARDFAULT_SIGNATURE)
+    {
+        reason = RESET_REASON_HARDFAULT;
+    }
+    else if (__HAL_RCC_GET_FLAG(RCC_FLAG_LPWRRST))
     {
         reason = 0x06; // Low Power Reset
     }
@@ -655,7 +669,7 @@ int join(UART_HandleTypeDef *huart)
     uint16_t at_len = 0;
     HAL_UARTEx_ReceiveToIdle(&huart2, at_buf, sizeof(at_buf), &at_len, 500);
 
-    if (!str_exists((char *)at_buf, "OK"))
+    if (!span_exists(at_buf, (size_t)at_len, "OK"))
     {
         if (uart2_probe_and_align() < 0)
         {
@@ -760,6 +774,8 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip
     static const char suffix[] = "\"\r\n";
 
     if (!payload || length == 0)
+        return;
+    if (length > (SIZE_MAX - (sizeof(prefix) - 1u) - (sizeof(suffix) - 1u)) / 2u)
         return;
 
     static uint8_t txbuf[512];
@@ -984,6 +1000,38 @@ int main(void)
         {
             g_next_alarm_valid = false;
             rtc_invalidate_next_alarm_bkp();
+        }
+    }
+    if (g_next_send_valid)
+    {
+        rtc_calendar_t now_for_send_sanity = {0};
+        rtc_read_now(&now_for_send_sanity);
+
+        uint32_t now_send_epoch = 0u;
+        if (!rtc_calendar_to_epoch(&now_for_send_sanity, &now_send_epoch))
+        {
+            g_next_send_valid = false;
+            rtc_store_next_send_bkp(0u);
+        }
+        else
+        {
+            uint32_t send_interval_seconds = (uint32_t)SEND_INTERVAL_MINUTES * 60u;
+            if (send_interval_seconds == 0u)
+            {
+                send_interval_seconds = 1u;
+            }
+
+            uint32_t max_ahead_seconds = send_interval_seconds * 8u;
+            if (max_ahead_seconds < RTC_RESTORED_ALARM_MIN_AHEAD_SECONDS)
+            {
+                max_ahead_seconds = RTC_RESTORED_ALARM_MIN_AHEAD_SECONDS;
+            }
+            if ((g_next_send_epoch > now_send_epoch) &&
+                ((g_next_send_epoch - now_send_epoch) > max_ahead_seconds))
+            {
+                g_next_send_valid = false;
+                rtc_store_next_send_bkp(0u);
+            }
         }
     }
 
