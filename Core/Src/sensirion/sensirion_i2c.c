@@ -88,9 +88,15 @@ int16_t sensirion_i2c_read_words_as_bytes(uint8_t address, uint8_t* data,
                                           uint16_t num_words) {
     int16_t ret;
     uint16_t i, j;
-    uint16_t size = num_words * (SENSIRION_WORD_SIZE + CRC8_LEN);
+    uint16_t size;
     uint16_t word_buf[SENSIRION_MAX_BUFFER_WORDS];
     uint8_t* const buf8 = (uint8_t*)word_buf;
+
+    if (num_words > SENSIRION_MAX_BUFFER_WORDS) {
+        return BYTE_NUM_ERROR;
+    }
+
+    size = num_words * (SENSIRION_WORD_SIZE + CRC8_LEN);
 
     ret = sensirion_i2c_hal_read(address, buf8, size);
     if (ret != NO_ERROR)
@@ -114,7 +120,7 @@ int16_t sensirion_i2c_read_words_as_bytes(uint8_t address, uint8_t* data,
 int16_t sensirion_i2c_read_words(uint8_t address, uint16_t* data_words,
                                  uint16_t num_words) {
     int16_t ret;
-    uint8_t i;
+    uint16_t i;
 
     ret = sensirion_i2c_read_words_as_bytes(address, (uint8_t*)data_words,
                                             num_words);

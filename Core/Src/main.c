@@ -105,7 +105,6 @@ static uint8_t reset_reason = 0xFF; // Store reset reason
 
 static volatile bool g_allow_lse_fail = false;
 
-static uint32_t transmission_count = 0; // Total transmissions sent
 // Flag to ensure first transmission happens immediately
 static bool first_run = true;
 
@@ -1150,7 +1149,6 @@ int main(void)
 
             if (send_due)
             {
-                transmission_count++;
 
                 /* Refresh connection flag from the module each cycle */
                 int link_state = lorawan_get_connection_status(&huart2);
