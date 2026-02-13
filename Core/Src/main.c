@@ -60,6 +60,14 @@
 #define RTC_BKP_MAGIC_REG RTC_BKP_DR0
 #define RTC_BKP_NEXT_ALARM_EPOCH_REG RTC_BKP_DR1
 #define RTC_BKP_NEXT_SEND_EPOCH_REG RTC_BKP_DR2
+#define RTC_BKP_DIAG_STAGE_REG RTC_BKP_DR3
+#define RTC_BKP_DIAG_RESET_FLAGS_REG RTC_BKP_DR4
+
+#define DIAG_STAGE_BOOT_COMPLETE 0xB0010001u
+#define DIAG_STAGE_PRE_STOP 0xB0010002u
+#define DIAG_STAGE_POST_WAKE 0xB0010003u
+#define DIAG_STAGE_STOP_RACE_SKIP 0xB0010004u
+#define DIAG_STAGE_ALARM_ARM_FAILED 0xB0010005u
 
 /* RTC prescalers for 32.768 kHz LSE crystal: 1 Hz tick */
 #define RTC_ASYNCH_PREDIV 127u
@@ -161,6 +169,8 @@ static bool rtc_restored_alarm_is_reasonable(const rtc_calendar_t *now,
 static void rcc_apply_periph_fallback_if_lse_missing(void);
 static inline void rcc_enable_guard_iopenr(uint32_t mask);
 static inline void rcc_enable_guard_apb1enr(uint32_t mask);
+static void diag_bkp_write(uint32_t reg, uint32_t value);
+static void diag_mark_stage(uint32_t stage);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -199,6 +209,8 @@ static uint8_t GetResetSource(void)
     {
         reason = 0x00; // Unknown/None
     }
+
+    diag_bkp_write(RTC_BKP_DIAG_RESET_FLAGS_REG, RCC->CSR);
 
     // Clear flags so next reset can be detected cleanly
     __HAL_RCC_CLEAR_RESET_FLAGS();
@@ -285,7 +297,7 @@ static bool send_device_info_packet(void)
 
     send_sensor_id_counter++;
 
-    if ((last_serial_1 != serial_1 && last_serial_2 != serial_2) || send_sensor_id_counter > SENSOR_SEND_INTERVAL_CYCLES)
+    if ((last_serial_1 != serial_1 || last_serial_2 != serial_2) || send_sensor_id_counter > SENSOR_SEND_INTERVAL_CYCLES)
     {
         last_serial_1 = serial_1;
         last_serial_2 = serial_2;
@@ -977,6 +989,7 @@ int main(void)
 
     /* Capture reset reason early */
     reset_reason = GetResetSource();
+    diag_mark_stage(DIAG_STAGE_BOOT_COMPLETE);
 
     // Check if already joined
     int startup_join_state = lorawan_check_joined(&huart2);
@@ -1233,9 +1246,12 @@ int main(void)
         rtc_store_next_alarm_bkp(&g_next_alarm);
         if (!rtc_arm_alarm_a_with_retry(&g_next_alarm))
         {
+            diag_mark_stage(DIAG_STAGE_ALARM_ARM_FAILED);
             continue;
         }
+        diag_mark_stage(DIAG_STAGE_PRE_STOP);
         EnterDeepSleepMode();
+        diag_mark_stage(DIAG_STAGE_POST_WAKE);
     }
     /* USER CODE END 3 */
 }
@@ -1844,6 +1860,24 @@ static void rtc_clear_backup_state(void)
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_MAGIC_REG, 0u);
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_NEXT_ALARM_EPOCH_REG, 0u);
     HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_NEXT_SEND_EPOCH_REG, 0u);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DIAG_STAGE_REG, 0u);
+    HAL_RTCEx_BKUPWrite(&hrtc, RTC_BKP_DIAG_RESET_FLAGS_REG, 0u);
+}
+
+static void diag_bkp_write(uint32_t reg, uint32_t value)
+{
+    if (hrtc.Instance == NULL)
+    {
+        hrtc.Instance = RTC;
+    }
+    __HAL_RCC_PWR_CLK_ENABLE();
+    HAL_PWR_EnableBkUpAccess();
+    HAL_RTCEx_BKUPWrite(&hrtc, reg, value);
+}
+
+static void diag_mark_stage(uint32_t stage)
+{
+    diag_bkp_write(RTC_BKP_DIAG_STAGE_REG, stage);
 }
 
 static bool rtc_calendar_to_epoch(const rtc_calendar_t *cal, uint32_t *epoch_out)
@@ -2506,6 +2540,7 @@ void EnterDeepSleepMode(void)
     if (g_alarm_fired ||
         __HAL_RTC_ALARM_GET_FLAG(&hrtc, RTC_FLAG_ALRAF) != 0U)
     {
+        diag_mark_stage(DIAG_STAGE_STOP_RACE_SKIP);
         g_alarm_fired = true;
         __HAL_RTC_ALARM_CLEAR_FLAG(&hrtc, RTC_FLAG_ALRAF);
         __HAL_RTC_ALARM_EXTI_CLEAR_FLAG();
