@@ -43,7 +43,7 @@
 #define SLEEP_TIME_SECONDS_DEFAULT 15u
 // How often to send (minutes). Wake happens more often than this.
 #define SEND_INTERVAL_MINUTES 10u
-#define SLEEP_INTERVAL_MARGIN_SECONDS 3u
+#define SLEEP_INTERVAL_MARGIN_SECONDS 8u
 #define BATTERY_SEND_INTERVAL_CYCLES 4500 // Should be 4400
 #define SENSOR_SEND_INTERVAL_CYCLES 144u  // Just over 144 day
 
@@ -2243,13 +2243,46 @@ static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
  */
 static void calendar_add_seconds(rtc_calendar_t *cal, uint32_t seconds_to_add)
 {
-    uint32_t total_seconds = cal->seconds + seconds_to_add;
-    uint32_t minutes_to_add = total_seconds / 60u;
-    cal->seconds = total_seconds % 60u;
-
-    if (minutes_to_add > 0u)
+    /*
+     * Use epoch-based arithmetic to avoid integer truncation bugs in the
+     * manual day/month/year rollover path of calendar_add_minutes().
+     * The old code could corrupt cal->day when days_to_add exceeded 255
+     * (uint8_t range), producing an invalid alarm date that the RTC
+     * hardware would never match — causing the device to never wake.
+     */
+    uint32_t epoch = 0u;
+    if (!rtc_calendar_to_epoch(cal, &epoch))
     {
-        calendar_add_minutes(cal, minutes_to_add);
+        /* Calendar is already invalid; best effort: just add to seconds */
+        uint32_t total_seconds = cal->seconds + seconds_to_add;
+        uint32_t minutes_to_add = total_seconds / 60u;
+        cal->seconds = total_seconds % 60u;
+        if (minutes_to_add > 0u)
+        {
+            calendar_add_minutes(cal, minutes_to_add);
+        }
+        return;
+    }
+
+    /* Clamp to prevent uint32_t overflow */
+    if (seconds_to_add > (UINT32_MAX - epoch))
+    {
+        epoch = UINT32_MAX;
+    }
+    else
+    {
+        epoch += seconds_to_add;
+    }
+
+    if (!rtc_epoch_to_calendar(epoch, cal))
+    {
+        /* Epoch overflowed the 100-year calendar range; reset to a sane default */
+        cal->year = 0u;
+        cal->month = 1u;
+        cal->day = 1u;
+        cal->hours = 0u;
+        cal->minutes = 0u;
+        cal->seconds = 0u;
     }
 }
 
