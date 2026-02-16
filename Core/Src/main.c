@@ -2240,7 +2240,7 @@ static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
         }
         else
         {
-            days_to_add -= (uint32_t)(dim - cal->day + 1u);
+            days_to_add -= ((uint32_t)dim - (uint32_t)cal->day + 1u);
             cal->day = 1;
             cal->month++;
             if (cal->month > 12)
