@@ -44,7 +44,7 @@
 // How often to send (minutes). Wake happens more often than this.
 #define SEND_INTERVAL_MINUTES 10u
 #define SLEEP_INTERVAL_MARGIN_SECONDS 3u
-#define BATTERY_SEND_INTERVAL_CYCLES 4500 // Should be 4400
+#define BATTERY_SEND_INTERVAL_CYCLES 4500u // Should be 4400
 #define SENSOR_SEND_INTERVAL_CYCLES 144u  // Just over 144 day
 
 #define DEV_EUI "0025CA00000056F7"
@@ -2214,7 +2214,25 @@ static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
 
     while (days_to_add > 0)
     {
+        /* Sanitize month in case of corrupt calendar state */
+        if (cal->month < 1u)
+        {
+            cal->month = 1u;
+        }
+        if (cal->month > 12u)
+        {
+            cal->month = 12u;
+        }
         uint8_t dim = days_in_month(cal->month, cal->year);
+        /* Sanitize day in case of corrupt calendar state */
+        if (cal->day < 1u)
+        {
+            cal->day = 1u;
+        }
+        if (cal->day > dim)
+        {
+            cal->day = dim;
+        }
         if (cal->day + days_to_add <= dim)
         {
             cal->day += days_to_add;
@@ -2222,15 +2240,18 @@ static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
         }
         else
         {
-            days_to_add -= (dim - cal->day + 1);
+            days_to_add -= (uint32_t)(dim - cal->day + 1u);
             cal->day = 1;
             cal->month++;
             if (cal->month > 12)
             {
                 cal->month = 1;
-                cal->year++;
-                if (cal->year > 99)
-                    cal->year = 0; /* Wrap at 2099 -> 2000 */
+                if (cal->year < 99)
+                {
+                    cal->year++;
+                }
+                /* Clamp at year 99 (2099) to prevent rollover that would
+                 * break epoch calculations and alarm scheduling. */
             }
         }
     }

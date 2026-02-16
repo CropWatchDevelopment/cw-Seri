@@ -33,18 +33,11 @@
 #define SENSIRION_I2C_HAL_H
 
 #include "sensirion_config.h"
-#include <stdio.h>          // for sprintf
 
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
 
-
-/**
- * @brief Message buffer to prepare string before sending to serial port
- * 
- */
-extern uint8_t msgbuf[256];
 
 /**
  * Select the current i2c bus by index.
