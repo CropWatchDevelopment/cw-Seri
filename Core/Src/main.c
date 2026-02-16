@@ -60,6 +60,8 @@ RTC_HandleTypeDef hrtc;
 
 UART_HandleTypeDef huart2;
 
+IWDG_HandleTypeDef hiwdg;
+
 /* USER CODE BEGIN PV */
 
 int is_connected = 0;
@@ -99,6 +101,7 @@ static void MX_USART2_UART_Init(void);
 static void MX_RTC_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC_Init(void);
+static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort);
@@ -584,6 +587,7 @@ int join(UART_HandleTypeDef *huart)
     uint32_t start = HAL_GetTick();
     while (HAL_GetTick() - start < 35000)
     {
+        HAL_IWDG_Refresh(&hiwdg);
         uint16_t chunk = 0;
         if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
                                      sizeof(rxbuf) - total_rcv - 1, &chunk,
@@ -718,6 +722,7 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort)
 
     while ((HAL_GetTick() - start) < overall_to_ms)
     {
+        HAL_IWDG_Refresh(&hiwdg);
         // Stop if we filled the buffer
         if (total >= sizeof(rxbuf) - 1)
             break;
@@ -844,12 +849,14 @@ int main(void)
     MX_RTC_Init();
     MX_I2C1_Init();
     MX_ADC_Init();
+    MX_IWDG_Init();
     /* USER CODE BEGIN 2 */
 
     // Capture reset reason early
     reset_reason = GetResetSource();
 
     // Check if already joined
+    HAL_IWDG_Refresh(&hiwdg);
     int startup_join_state = lorawan_check_joined(&huart2);
     if (startup_join_state == 1)
     {
@@ -928,6 +935,7 @@ int main(void)
     }
 
     // Initial Serial Number Read & Send
+    HAL_IWDG_Refresh(&hiwdg);
     HAL_GPIO_WritePin(I2C_ENABLE_GPIO_Port, I2C_ENABLE_Pin, GPIO_PIN_SET);
     HAL_Delay(1000);
     scan_i2c_bus();
@@ -965,9 +973,9 @@ int main(void)
 
         if (do_transmit)
         {
-            wakeup_counter = 0; // reset for next cycle
             wakes_accum = 0;
-            transmission_count++;
+            if (transmission_count < UINT32_MAX)
+                transmission_count++;
             // first_run = false; // Moved to end of block
 
             // dbg_print_u32("Loop:WAKEUPS_PER_CYCLE", WAKEUPS_PER_CYCLE);
@@ -1047,6 +1055,7 @@ int main(void)
 
                     lorawan_set_battery_level(&huart2, battery);
                 }
+                readCount++;
 
                 if (has_soil_sensor)
                 {
@@ -1103,6 +1112,7 @@ int main(void)
             first_run = false;
         }
         // Always go back to deep sleep to allow next RTC wake
+        HAL_IWDG_Refresh(&hiwdg);
         EnterDeepSleepMode();
         //    HAL_Delay(5000);
 
@@ -1229,6 +1239,23 @@ static void MX_ADC_Init(void)
 }
 
 /**
+ * @brief IWDG Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_IWDG_Init(void)
+{
+    hiwdg.Instance = IWDG;
+    hiwdg.Init.Prescaler = IWDG_PRESCALER_256;
+    hiwdg.Init.Window = IWDG_WINDOW_DISABLE;
+    hiwdg.Init.Reload = 4095; /* ~26 s timeout at LSI 37 kHz / 256 */
+    if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
+
+/**
  * @brief I2C1 Initialization Function
  * @param None
  * @retval None
@@ -1314,7 +1341,23 @@ static void MX_RTC_Init(void)
         Error_Handler();
     }
     /* USER CODE BEGIN RTC_Init 2 */
+    /* Set baseline date/time to avoid calendar rollover from uninitialised state */
+    {
+        RTC_DateTypeDef sDate = {0};
+        sDate.WeekDay = RTC_WEEKDAY_MONDAY;
+        sDate.Month = RTC_MONTH_JANUARY;
+        sDate.Date = 1;
+        sDate.Year = 25; /* 2025 */
+        (void)HAL_RTC_SetDate(&hrtc, &sDate, RTC_FORMAT_BIN);
 
+        RTC_TimeTypeDef sTime = {0};
+        sTime.Hours = 0;
+        sTime.Minutes = 0;
+        sTime.Seconds = 0;
+        sTime.DayLightSaving = RTC_DAYLIGHTSAVING_NONE;
+        sTime.StoreOperation = RTC_STOREOPERATION_RESET;
+        (void)HAL_RTC_SetTime(&hrtc, &sTime, RTC_FORMAT_BIN);
+    }
     /* USER CODE END RTC_Init 2 */
 }
 
@@ -1556,6 +1599,14 @@ void EnterDeepSleepMode(void)
     /* Suspend SysTick to avoid wake-up from SysTick interrupt */
     HAL_SuspendTick();
 
+    /*
+     * Disable IRQs around the critical clear-flag → arm-timer → WFI sequence
+     * to prevent a wakeup ISR from firing between clearing the flag and
+     * entering STOP mode.  WFI still wakes on a pending interrupt even with
+     * IRQs masked; __enable_irq() afterwards lets the ISR run normally.
+     */
+    __disable_irq();
+
     /* Clear any pending wake-up flags before sleeping */
     __HAL_PWR_CLEAR_FLAG(PWR_FLAG_WU);
     __HAL_RTC_WAKEUPTIMER_CLEAR_FLAG(&hrtc, RTC_FLAG_WUTF);
@@ -1565,6 +1616,9 @@ void EnterDeepSleepMode(void)
 
     /* Enter STOP Mode with Low Power Regulator */
     HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+
+    /* Re-enable interrupts so the pending RTC ISR is serviced */
+    __enable_irq();
 
     /* === DEVICE IS NOW IN DEEP SLEEP === */
     /* === WAKE UP OCCURS HERE === */
