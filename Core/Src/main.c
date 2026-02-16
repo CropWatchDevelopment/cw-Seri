@@ -26,7 +26,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "battery/vbat_lorawan.h"
 #include "sensirion/sensirion.h"
 #include "watchdog.h"
 
@@ -43,8 +42,7 @@
 #define SLEEP_TIME_SECONDS_DEFAULT 15u
 // How often to send (minutes). Wake happens more often than this.
 #define SEND_INTERVAL_MINUTES 10u
-#define SLEEP_INTERVAL_MARGIN_SECONDS 3u
-#define BATTERY_SEND_INTERVAL_CYCLES 4500u // Should be 4400
+#define SLEEP_INTERVAL_MARGIN_SECONDS 8u
 #define SENSOR_SEND_INTERVAL_CYCLES 144u  // Just over 144 day
 
 #define DEV_EUI "0025CA00000056F7"
@@ -119,7 +117,6 @@ static volatile bool g_allow_lse_fail = false;
 // Flag to ensure first transmission happens immediately
 static bool first_run = true;
 
-static uint16_t send_battery_counter = 0;
 static uint16_t send_sensor_id_counter = 0;
 /* Ensure first uplink after boot prioritizes sensor payload over device-info */
 static bool g_boot_sensor_payload_priority = true;
@@ -152,7 +149,6 @@ static void MX_IWDG_Init(void);
 /* USER CODE BEGIN PFP */
 void EnterDeepSleepMode(void);
 void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip_response);
-int lorawan_set_battery_level(UART_HandleTypeDef *huart, uint8_t battery_level);
 static void usart2_recover_after_stop(void);
 static void i2c1_bus_recovery(void);
 static void restore_from_stop(void);
@@ -328,16 +324,6 @@ static bool send_device_info_packet(void)
     return sent;
 }
 
-static void send_device_battery(void)
-{
-    int aproxBatteryTemp_c = ((calculated_temp_1 - 5500) / 100);
-    uint8_t battery =
-        vbat_measure_and_encode(&hadc, ADC_CHANNEL_0, aproxBatteryTemp_c,
-                                /*external_power_present=*/false);
-
-    lorawan_set_battery_level(&huart2, battery);
-}
-
 static void send_sensor_reading_once(void)
 {
     /*
@@ -378,7 +364,7 @@ static void send_sensor_reading_once(void)
         u = (uint16_t)soil_VWC;
         payload[6] = (uint8_t)(u >> 8);
         payload[7] = (uint8_t)(u & 0xFF);
-        LoRaWAN_SendHex(payload, 8, 1, true);
+        LoRaWAN_SendHex(payload, 8, 1, false);
     }
     else
     {
@@ -390,31 +376,31 @@ static void send_sensor_reading_once(void)
             payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
             payload[2] = (uint8_t)(calculated_hum_1 >> 8);
             payload[3] = (uint8_t)(calculated_hum_1 & 0xFF);
-            LoRaWAN_SendHex(payload, 4, 1, true);
+            LoRaWAN_SendHex(payload, 4, 1, false);
             break;
         }
         case I2C_SENSOR_1_MISSING:
         {
             uint8_t code = 1;
-            LoRaWAN_SendHex(&code, 1, 10, true);
+            LoRaWAN_SendHex(&code, 1, 10, false);
             break;
         }
         case I2C_SENSOR_2_MISSING:
         {
             uint8_t code = 2;
-            LoRaWAN_SendHex(&code, 1, 10, true);
+            LoRaWAN_SendHex(&code, 1, 10, false);
             break;
         }
         case I2C_SENSOR_1_READ_FAIL:
         {
             uint8_t code = 1;
-            LoRaWAN_SendHex(&code, 1, 10, true);
+            LoRaWAN_SendHex(&code, 1, 10, false);
             break;
         }
         case I2C_SENSOR_2_READ_FAIL:
         {
             uint8_t code = 2;
-            LoRaWAN_SendHex(&code, 1, 10, true);
+            LoRaWAN_SendHex(&code, 1, 10, false);
             break;
         }
         case I2C_READ_ERROR_TEMP_MISMATCH:
@@ -423,7 +409,7 @@ static void send_sensor_reading_once(void)
             payload[1] = (uint8_t)(calculated_temp_1 & 0xFF);
             payload[2] = (uint8_t)(calculated_temp_2 >> 8);
             payload[3] = (uint8_t)(calculated_temp_2 & 0xFF);
-            LoRaWAN_SendHex(payload, 4, 11, true);
+            LoRaWAN_SendHex(payload, 4, 11, false);
             break;
         }
         default:
@@ -645,29 +631,29 @@ int lorawan_check_joined(UART_HandleTypeDef *huart)
 
 int join(UART_HandleTypeDef *huart)
 {
-    // Refresh connection state from the module before deciding to join
+    if (huart == NULL)
+    {
+        return 0;
+    }
+
+    /* Always trust modem-reported link state over cached software state. */
     int status = lorawan_get_connection_status(huart);
     if (status == 1)
     {
         is_connected = 1;
         return 1;
     }
-    else if (status == 0)
+    if (status == 0)
     {
         is_connected = 0;
     }
 
-    if (is_connected) // fallback to cached value if status was unknown
-    {
-        return 1;
-    }
-
     // Ensure UART is alive
-    uart2_rx_flush(&huart2);
-    HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
+    uart2_rx_flush(huart);
+    HAL_UART_Transmit(huart, (uint8_t *)"AT\r\n", 4, 300);
     uint8_t at_buf[16] = {0};
     uint16_t at_len = 0;
-    HAL_UARTEx_ReceiveToIdle(&huart2, at_buf, sizeof(at_buf), &at_len, 500);
+    HAL_UARTEx_ReceiveToIdle(huart, at_buf, sizeof(at_buf), &at_len, 500);
 
     if (!span_exists(at_buf, (size_t)at_len, "OK"))
     {
@@ -680,8 +666,8 @@ int join(UART_HandleTypeDef *huart)
     uint16_t total_rcv = 0;
     uint8_t rxbuf[256] = {0};
 
-    uart2_rx_flush(&huart2);
-    HAL_UART_Transmit(&huart2, (uint8_t *)"AT+JOIN\r\n", 9, 300);
+    uart2_rx_flush(huart);
+    HAL_UART_Transmit(huart, (uint8_t *)"AT+JOIN\r\n", 9, 300);
 
     // Wait for response (up to ~35s)
     uint32_t start = HAL_GetTick();
@@ -692,7 +678,7 @@ int join(UART_HandleTypeDef *huart)
             break;
         uint16_t chunk = 0;
         uint16_t cap = (uint16_t)(sizeof(rxbuf) - 1u - total_rcv);
-        if (HAL_UARTEx_ReceiveToIdle(&huart2, rxbuf + total_rcv,
+        if (HAL_UARTEx_ReceiveToIdle(huart, rxbuf + total_rcv,
                                      cap, &chunk,
                                      1000) == HAL_OK)
         {
@@ -711,50 +697,33 @@ int join(UART_HandleTypeDef *huart)
         }
     }
 
-    char result = find_char_after((const char *)rxbuf, "JOIN: [");
-    char error14 = find_char_after((const char *)rxbuf, "\nERROR 1");
-    if (result == 'O' || error14 == '4')
+    bool join_ok = span_exists(rxbuf, total_rcv, "JOIN: [OK]");
+    bool join_fail = span_exists(rxbuf, total_rcv, "JOIN: [FAIL]");
+    bool error14 = span_exists(rxbuf, total_rcv, "ERROR 14");
+
+    if (join_ok)
     {
         is_connected = 1;
         return 1;
     }
 
-    if (result == 'F')
+    if (join_fail)
     {
-        HAL_UART_Transmit(&huart2, (uint8_t *)"AT+DROP\r\n", 9, 300);
+        HAL_UART_Transmit(huart, (uint8_t *)"AT+DROP\r\n", 9, 300);
         HAL_Delay(200);
         is_connected = 0;
         return 0;
     }
+
+    if (error14)
+    {
+        /*
+         * Module is busy/in-progress (state conflict).
+         * Do not force disconnect state here; join result is not final.
+         */
+        return 0;
+    }
     return 0;
-}
-
-int lorawan_set_battery_level(UART_HandleTypeDef *huart,
-                              uint8_t battery_level)
-{
-    char cmd[32]; // enough space for command
-    int len = snprintf(cmd, sizeof(cmd), "AT+BAT %u\r\n", battery_level);
-
-    if (len <= 0 || len >= sizeof(cmd))
-    {
-        return -1; // encoding error or buffer too small
-    }
-
-    // Flush / clear UART
-    HAL_UART_AbortReceive(huart);
-    __HAL_UART_FLUSH_DRREGISTER(huart);
-    __HAL_UART_CLEAR_IDLEFLAG(huart);
-    __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_FEF |
-                                     UART_CLEAR_PEF | UART_CLEAR_NEF);
-
-    // Transmit command
-    if (HAL_UART_Transmit(huart, (uint8_t *)cmd, (uint16_t)len, 300) != HAL_OK)
-    {
-        return -2; // TX error
-    }
-
-    HAL_Delay(300);
-    return 0; // success
 }
 
 static void LoRaWAN_set_fport(int fPort)
@@ -878,28 +847,30 @@ void LoRaWAN_SendHex(const uint8_t *payload, size_t length, int fPort, bool skip
 
     // Ensure we saw at least one of the expected markers in the raw buffer
     bool has_tx =
-        span_exists(rxbuf, total, "TX "); // datasheet uses "TX [result]"
+        span_exists(rxbuf, total, "TX:") || span_exists(rxbuf, total, "TX ");
     bool has_adrx = span_exists(rxbuf, total, "ADRX:");
     bool has_error = span_exists(rxbuf, total, "ERROR");
+    bool has_error81 = span_exists(rxbuf, total, "ERROR 81");
 
     if (has_error || (!has_tx && !has_adrx))
     {
-        // Double-check actual link state before forcing reconnect logic
-        int link = lorawan_get_connection_status(&huart2);
-        if (link == 1)
-        {
-            is_connected = 1;
-            return;
-        }
-        else if (link == 0)
+        /* Explicit modem signal: uplink rejected because node is not joined. */
+        if (has_error81)
         {
             is_connected = 0;
-            // Only reset if the module explicitly reports not connected
-            (void)HAL_UART_Transmit(&huart2, (uint8_t *)"AT\r\n", 4, 300);
-            HAL_Delay(200);
-            (void)HAL_UART_Transmit(&huart2, (uint8_t *)"ATZ\r\n", 5, 300);
+            return;
         }
-        // If link == -1 (parse fail), skip reset and let next cycle retry
+
+        /* Keep cached link state synchronized when TX response is inconclusive. */
+        int link_state = lorawan_get_connection_status(&huart2);
+        if (link_state == 1)
+        {
+            is_connected = 1;
+        }
+        else if (link_state == 0)
+        {
+            is_connected = 0;
+        }
         return;
     }
     return;
@@ -1210,8 +1181,11 @@ int main(void)
 
             if (send_due)
             {
-
-                /* Refresh connection flag from the module each cycle */
+                /*
+                 * Connection model:
+                 * - boot: set is_connected from lorawan_check_joined()
+                 * - runtime: refresh from modem before deciding to join/send
+                 */
                 int link_state = lorawan_get_connection_status(&huart2);
                 if (link_state == 1)
                 {
@@ -1234,16 +1208,7 @@ int main(void)
                 else
                 {
                     send_sensor_reading_once();
-
                     watchdog_kick();
-
-                    /* Battery reporting */
-                    send_battery_counter++;
-                    if (send_battery_counter >= BATTERY_SEND_INTERVAL_CYCLES)
-                    {
-                        send_battery_counter = 0;
-                        send_device_battery();
-                    }
                 }
 
                 if (now_epoch_ok && g_next_send_valid)
@@ -2202,7 +2167,7 @@ void rtc_read_now(rtc_calendar_t *now)
  * @param  cal: Pointer to calendar structure to modify
  * @param  minutes_to_add: Minutes to add
  */
-static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
+static bool calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
 {
     uint32_t total_minutes = cal->minutes + minutes_to_add;
     uint32_t hours_to_add = total_minutes / 60u;
@@ -2245,16 +2210,26 @@ static void calendar_add_minutes(rtc_calendar_t *cal, uint32_t minutes_to_add)
             cal->month++;
             if (cal->month > 12)
             {
-                cal->month = 1;
-                if (cal->year < 99)
+                if (cal->year < 99u)
                 {
+                    cal->month = 1u;
                     cal->year++;
                 }
-                /* Clamp at year 99 (2099) to prevent rollover that would
-                 * break epoch calculations and alarm scheduling. */
+                else
+                {
+                    /* Saturate at max representable calendar time (2099). */
+                    cal->year = 99u;
+                    cal->month = 12u;
+                    cal->day = 31u;
+                    cal->hours = 23u;
+                    cal->minutes = 59u;
+                    return true;
+                }
             }
         }
     }
+
+    return false;
 }
 
 /**
@@ -2270,7 +2245,11 @@ static void calendar_add_seconds(rtc_calendar_t *cal, uint32_t seconds_to_add)
 
     if (minutes_to_add > 0u)
     {
-        calendar_add_minutes(cal, minutes_to_add);
+        if (calendar_add_minutes(cal, minutes_to_add))
+        {
+            /* If minutes addition saturated at max date/time, seconds must too. */
+            cal->seconds = 59u;
+        }
     }
 }
 
