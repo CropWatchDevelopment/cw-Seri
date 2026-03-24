@@ -51,8 +51,8 @@ uint16_t calculated_hum_2;
 uint32_t serial_1 = 0;
 uint32_t serial_2 = 0;
 
-uint32_t last_serial_1 = -1; // Last Sensor 1 value
-uint32_t last_serial_2 = -1; // Last Sensor 2 value
+uint32_t last_serial_1 = 0; // Last Sensor 1 value
+uint32_t last_serial_2 = 0; // Last Sensor 2 value
 
 int16_t i2c_result = 0;
 

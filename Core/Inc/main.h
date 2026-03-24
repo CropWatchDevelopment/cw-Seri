@@ -82,8 +82,6 @@ extern volatile bool g_alarm_fired;
 #define LoRaWAN_RX_GPIO_Port GPIOA
 #define DBG_LED_Pin GPIO_PIN_5
 #define DBG_LED_GPIO_Port GPIOA
-#define VBAT_MEAS_EN_Pin GPIO_PIN_0
-#define VBAT_MEAS_EN_GPIO_Port GPIOB
 #define I2C_ENABLE_Pin GPIO_PIN_5
 #define I2C_ENABLE_GPIO_Port GPIOB
 
